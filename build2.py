@@ -6,6 +6,7 @@ Handles ZIP (with zstd/deflate64) and RAR files directly from URL.
 ZIP mode : HTTP range requests → jumps to each file directly, supports --skip-existing
 RAR mode : curl | bsdtar streaming pipe (must stream whole archive)
 
+
 Requirements:
     pip install remotezip tqdm zstandard requests
 
