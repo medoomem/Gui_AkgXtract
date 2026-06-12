@@ -10,6 +10,7 @@ import sys
 import re
 from pathlib import Path
 
+
 # ─── Theme ────────────────────────────────────────────────────────────────────
 
 ctk.set_appearance_mode("dark")
