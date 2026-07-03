@@ -32,10 +32,10 @@ This is the fastest, most transparent way to use the tool from source. You can r
 
 ```bash
 # Basic Usage:
-python extract.py <URL> [output_directory]
+python build2.py <URL> [output_directory]
 
 # Example:
-python extract.py https://example.com/game.zip D:\Games --workers 4
+python build2.py https://example.com/game.zip D:\Games --workers 4
 ```
 
 **Common CLI Options:**
@@ -50,7 +50,7 @@ python extract.py https://example.com/game.zip D:\Games --workers 4
 Because the GUI (`gui.py`) spawns the extraction engine as a background subprocess, **you must build the CLI executable first** before launching the GUI.
 
 1. **Compile the CLI backend:**
-   Run your repository's build script to package `extract.py` into the required `backend/akgxtract.exe` binary:
+   Run your repository's build script to package `build2.py` into the required `backend/akgxtract.exe` binary:
    ```bash
    python build2.py
    ```
@@ -86,7 +86,7 @@ The GUI launcher expects the compiled CLI executable (`akgxtract.exe` or `akgxtr
 * **Manual Nuitka Command:**
   If you prefer to compile the CLI manually, run:
   ```bash
-  nuitka --standalone --onefile --output-dir=backend --output-filename=akgxtract extract.py
+  nuitka --standalone --onefile --output-dir=backend --output-filename=akgxtract build2.py
   ```
 
 ### 2. Compiling the GUI Frontend
