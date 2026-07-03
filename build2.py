@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-extract.py — Universal game archive extractor
+build2.py — Universal game archive extractor
 Handles ZIP (with zstd/deflate64) and RAR files directly from URL.
 
 ZIP mode : HTTP range requests → jumps to each file directly, supports --skip-existing
