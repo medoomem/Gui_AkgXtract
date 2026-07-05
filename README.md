@@ -13,6 +13,12 @@ Supported formats include: **ZIP** (including zstd/deflate64), **RAR**, **TAR**,
 
 ---
 
+## Requirements
+
+* [Official Git For Windows](https://gitforwindows.org/)
+
+---
+
 ## Running From Source
 
 If you prefer not to run pre-compiled executables, you can run the tool directly using your local Python interpreter. 
