@@ -16,6 +16,7 @@ Supported formats include: **ZIP** (including zstd/deflate64), **RAR**, **TAR**,
 ## Requirements
 
 * [Official Git For Windows](https://gitforwindows.org/)
+* [Official Msys2 For Windows](https://www.msys2.org/)
 
 ---
 
