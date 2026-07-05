@@ -14,7 +14,7 @@ Supported formats include: **ZIP** (including zstd/deflate64), **RAR**, **TAR**,
 ---
 
 ## Requirements
-
+**These Softwares Are Required to Run The Gui, Dont Skip Them**
 * [Official Git For Windows](https://gitforwindows.org/)
 * [Official Msys2 For Windows](https://www.msys2.org/)
 
