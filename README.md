@@ -6,13 +6,6 @@ Supported formats include: **ZIP** (including zstd/deflate64), **RAR**, **TAR**,
 
 ---
 
-## Requirements
-**These Softwares Are Required to Run The Gui, Dont Skip Them**
-* [Official Git For Windows](https://gitforwindows.org/)
-* [Official Msys2 For Windows](https://www.msys2.org/)
-
----
-
 ## How It Works
 
 * **ZIP Mode (HTTP Range Requests):** The tool uses range requests to read the archive's central directory directly from the URL. It can jump around the file to download and extract specific blocks, supporting multi-threaded parallel downloads.
