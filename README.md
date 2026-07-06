@@ -114,6 +114,7 @@ In open-source software, trust is important. Because this utility handles downlo
 The pre-compiled standalone package is bundled using **Nuitka** (which compiles Python to C++). It includes:
 * **`libcrypto-3.dll` & `libssl-3.dll`:** Standard OpenSSL libraries required by Python's network modules (`requests`, `urllib3`) to safely handle secure HTTPS connections.
 * **`curl.exe` & `bsdtar.exe`:** Standard, widely trusted command-line tools used by the operating system to stream sequential archives.
+* **`Msys Dlls`:** Are Important dlls by the Msys2 Software To Fix the Communication between `curl.exe` & `bsdtar.exe` And to Display Some Info Like The Donwload Bar And The Time Estimation.
 
 ### Verifying the Pre-Compiled Setup
 If you choose to use the pre-compiled version, you can verify its integrity:
