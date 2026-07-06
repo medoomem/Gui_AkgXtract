@@ -118,8 +118,9 @@ The pre-compiled standalone package is bundled using **Nuitka** (which compiles 
 ### Verifying the Pre-Compiled Setup
 If you choose to use the pre-compiled version, you can verify its integrity:
 
-* **Setup File MD5 Hash:** `426d4d8065ed7be258f7b78bfc555993`
-* **VirusTotal Scan:** [View VirusTotal Analysis](https://www.virustotal.com/gui/file/79d7136f1cd6ccd76617727b618ceeda4fb10eff907835c7962511a1435f9bb5)
+* **Setup File MD5 Hash:** `
+ec88b6f137468e71ed4ec618ed832b00`
+* **VirusTotal Scan:** [View VirusTotal Analysis](https://www.virustotal.com/gui/file/286f7f9b8cf4b5ea8d9a6c2d5092f6dc0efaefa7a18e8f3a76713555a47883b3/details)
 
 ---
 
