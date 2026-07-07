@@ -141,10 +141,8 @@ class Spinner(ctk.CTkLabel):
 
 
 def get_icon_path(relative_path):
-    """ Get absolute path to resource, works for dev and for PyInstaller """
-    if hasattr(sys, '_MEIPASS'):
-        return os.path.join(sys._MEIPASS, relative_path)
-    return os.path.join(os.path.abspath("."), relative_path)
+    """ Get absolute path to resource, works for dev and Nuitka """
+    return get_resource_path(relative_path)
 
 class ExtractGUI(ctk.CTk):
     _RE_TQDM = re.compile(r"(Total|Files|Extracting)[:\s]+(\d+)%.*?([\d\.]+\s*\w+)\s*/\s*([\d\.]+\s*\w+).*?\[([^\]]+)\]")
@@ -252,8 +250,13 @@ class ExtractGUI(ctk.CTk):
         # Buttons
         btn_row = ctk.CTkFrame(pad, fg_color="transparent")
         btn_row.pack(fill="x")
+        
         self._start_btn = ctk.CTkButton(btn_row, text="START EXTRACTION", height=55, font=("Consolas", 16, "bold"), fg_color=C["cyan"], text_color=C["bg"], command=self._start)
-        self._start_btn.pack(side="left", fill="x", expand=True, padx=(0, 10))
+        self._start_btn.pack(side="left", fill="x", expand=True, padx=(0, 5))
+        
+        self._resume_btn = ctk.CTkButton(btn_row, text="RESUME EXTRACTION", height=55, font=("Consolas", 16, "bold"), fg_color=C["purple"], hover_color=C["purple_d"], text_color=C["text"], command=self._resume)
+        self._resume_btn.pack(side="left", fill="x", expand=True, padx=(5, 10))
+        
         self._stop_btn = ctk.CTkButton(btn_row, text="STOP", height=55, width=150, font=("Consolas", 14, "bold"), fg_color=C["raised"], state="disabled", command=self._stop)
         self._stop_btn.pack(side="right")
 
@@ -273,6 +276,11 @@ class ExtractGUI(ctk.CTk):
     def _clear_log(self):
         self._log.configure(state="normal"); self._log.delete("1.0", "end"); self._log.configure(state="disabled")
 
+    def _resume(self):
+        self._skip.set(True)
+        self._write_log("[*] Resume mode triggered. 'Skip Existing' has been auto-enabled.")
+        self._start()
+
     def _start(self):
         url = self._url.get().strip()
         out = self._out.get().strip()
@@ -281,12 +289,18 @@ class ExtractGUI(ctk.CTk):
         self._clear_log()
         self._running = True
         self._start_btn.configure(state="disabled")
+        self._resume_btn.configure(state="disabled")
         self._stop_btn.configure(state="normal")
         self._spinner.start()
         self._c_status.set("Starting...", C["yellow"])
         self._pb_total.reset(); self._pb_files.reset()
 
-        cmd = [self._exe, url, out]
+        # Handle raw script vs compiled binary during development fallback
+        if self._exe.endswith(".py"):
+            cmd = [sys.executable, self._exe, url, out]
+        else:
+            cmd = [self._exe, url, out]
+
         if self._skip.get(): cmd.append("--skip-existing")
         if self._info.get(): cmd.append("--info")
         if self._fzip.get(): cmd.append("--force-zip")
@@ -334,7 +348,9 @@ class ExtractGUI(ctk.CTk):
                 if msg == "line": self._handle_line(val)
                 elif msg == "done":
                     self._running = False
-                    self._start_btn.configure(state="normal"); self._stop_btn.configure(state="disabled")
+                    self._start_btn.configure(state="normal")
+                    self._resume_btn.configure(state="normal")
+                    self._stop_btn.configure(state="disabled")
                     self._spinner.stop()
                     if self._c_status._val.cget("text") != "Stopped":
                         self._c_status.set("Finished ✓" if val == 0 else f"Exit {val}", C["green"] if val == 0 else C["red"])
