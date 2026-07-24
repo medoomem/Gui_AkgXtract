@@ -22,11 +22,12 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          cache: 'pip'
 
       - name: Install Python Dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install nuitka zstandard requests remotezip tqdm zipfile_deflate64 customtkinter
+          python -m pip install nuitka zstandard requests remotezip tqdm zipfile_deflate64 customtkinter pillow
 
       # -------------------------------------------------------------
       # 1. Decode PFX Certificate from GitHub Secrets
@@ -39,14 +40,25 @@ jobs:
           [IO.File]::WriteAllBytes($cert_path, $pfx_bytes)
 
       # -------------------------------------------------------------
-      # 2. Compile CLI Backend with Nuitka
+      # 2. Compile CLI Backend with Nuitka (Folder Mode + Metadata)
       # -------------------------------------------------------------
       - name: Compile CLI Backend (akgxtract.exe)
+        shell: powershell
         run: |
-          python -m nuitka --standalone --assume-yes-for-downloads --output-dir=build_backend --output-filename=akgxtract.exe build2.py
+          python -m nuitka --standalone `
+                           --assume-yes-for-downloads `
+                           --company-name="Medoomem" `
+                           --product-name="AkgXtract" `
+                           --file-version="1.1.2.8" `
+                           --product-version="1.1.2.8" `
+                           --file-description="Universal Archive Extractor CLI Engine" `
+                           --copyright="Copyright (C) 2026 Medoomem" `
+                           --output-dir=build_backend `
+                           --output-filename=akgxtract.exe `
+                           build2.py
 
       # -------------------------------------------------------------
-      # 3. Compile GUI Frontend with Nuitka
+      # 3. Compile GUI Frontend with Nuitka (Folder Mode + Metadata)
       # -------------------------------------------------------------
       - name: Compile GUI Frontend (guiextract.exe)
         shell: powershell
@@ -59,8 +71,8 @@ jobs:
               }
           }
 
-          # Prepare Nuitka command using --include-package-data=customtkinter
-          $cmd = "python -m nuitka --standalone --assume-yes-for-downloads --windows-console-mode=disable --enable-plugin=tk-inter --include-package-data=customtkinter --output-dir=build_gui --output-filename=guiextract.exe"
+          # Prepare Nuitka command with Windows Version Resources Metadata
+          $cmd = "python -m nuitka --standalone --assume-yes-for-downloads --windows-console-mode=disable --enable-plugin=tk-inter --include-package-data=customtkinter --company-name='Medoomem' --product-name='Gui_AkgXtract' --file-version='1.1.2.8' --product-version='1.1.2.8' --file-description='Universal Archive Extractor GUI' --copyright='Copyright (C) 2026 Medoomem' --output-dir=build_gui --output-filename=guiextract.exe"
 
           if (Test-Path "downloader_icon.ico") {
               $cmd += " --windows-icon-from-ico=downloader_icon.ico"
@@ -70,7 +82,7 @@ jobs:
 
           $cmd += " gui.py"
           Invoke-Expression $cmd
-          
+
       # -------------------------------------------------------------
       # 4. Assemble Combined Directory Structure (dist/guiextract)
       # -------------------------------------------------------------
