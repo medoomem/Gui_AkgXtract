@@ -147,7 +147,8 @@ class ExtractGUI(ctk.CTk):
         super().__init__()
         self.title("Universal Archive Extractor")
         self.geometry("1020x670")
-        self.resizable(False, False)
+        self.resizable(True, True)
+        self.minsize(950, 650)  # Prevents shrinking so small that controls overlap
         self.configure(fg_color=C["bg"])
 
         self._exe     = find_exe()
