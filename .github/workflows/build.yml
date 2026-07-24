@@ -1,0 +1,146 @@
+name: Build, Sign & Release Gui_AkgXtract
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build Signed Windows Installer
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install nuitka zstandard requests remotezip tqdm zipfile_deflate64 customtkinter
+
+      # -------------------------------------------------------------
+      # 1. Decode PFX Certificate from GitHub Secrets
+      # -------------------------------------------------------------
+      - name: Decode PFX Certificate
+        shell: powershell
+        run: |
+          $pfx_bytes = [System.Convert]::FromBase64String("${{ secrets.CERTIFICATE_BASE64 }}")
+          $cert_path = "$env:RUNNER_TEMP\my_signature.pfx"
+          [IO.File]::WriteAllBytes($cert_path, $pfx_bytes)
+
+      # -------------------------------------------------------------
+      # 2. Compile CLI Backend with Nuitka (Folder Mode)
+      # -------------------------------------------------------------
+      - name: Compile CLI Backend (akgxtract.exe)
+        run: |
+          python -m nuitka --standalone --output-dir=build_backend --output-filename=akgxtract.exe build2.py
+
+      # -------------------------------------------------------------
+      # 3. Compile GUI Frontend with Nuitka (Folder Mode)
+      # -------------------------------------------------------------
+      - name: Compile GUI Frontend (guiextract.exe)
+        run: |
+          python -m nuitka --standalone --windows-console-mode=disable --enable-plugin=tk-inter --include-data-dir=customtkinter=customtkinter --windows-icon-from-ico=downloader_icon.ico --output-dir=build_gui --output-filename=guiextract.exe gui.py
+
+      # -------------------------------------------------------------
+      # 4. Assemble Combined Directory Structure (dist/guiextract)
+      # -------------------------------------------------------------
+      - name: Assemble Build Directory
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path "dist\guiextract\backend"
+
+          # Copy GUI files
+          Copy-Item -Path "build_gui\gui.dist\*" -Destination "dist\guiextract\" -Recurse -Force
+          Copy-Item -Path "downloader_icon.ico" -Destination "dist\guiextract\" -Force
+
+          # Copy Backend files into backend/ subfolder
+          Copy-Item -Path "build_backend\build2.dist\*" -Destination "dist\guiextract\backend\" -Recurse -Force
+
+          # Copy MSYS binaries and DLLs (curl.exe, bsdtar.exe, msys-*.dll) into backend/
+          if (Test-Path "Tools used") {
+              Copy-Item -Path "Tools used\*" -Destination "dist\guiextract\backend\" -Recurse -Force
+          }
+
+      # -------------------------------------------------------------
+      # 5. Code-Sign ALL EXEs, DLLs, and PYDs inside dist/guiextract
+      # -------------------------------------------------------------
+      - name: Code-Sign All Binaries
+        shell: powershell
+        run: |
+          $signtool = (Get-ChildItem -Path "C:\Program Files (x86)\Windows Kits\10\bin" -Filter signtool.exe -Recurse | Select-Object -First 1).FullName
+          $cert = "$env:RUNNER_TEMP\my_signature.pfx"
+          $pass = "${{ secrets.CERT_PASSWORD }}"
+
+          $binaries = Get-ChildItem -Path "dist\guiextract" -Include *.exe, *.dll, *.pyd -Recurse
+          foreach ($file in $binaries) {
+              Write-Host "Signing: $($file.FullName)"
+              & $signtool sign /f $cert /p $pass /fd SHA256 /tr http://timestamp.digicert.com /td sha256 /v "$($file.FullName)"
+          }
+
+      # -------------------------------------------------------------
+      # 6. Install Inno Setup and Build Installer
+      # -------------------------------------------------------------
+      - name: Install Inno Setup
+        run: choco install innosetup -y
+
+      - name: Build Inno Setup Installer
+        shell: powershell
+        run: |
+          $tagVersion = "${{ github.ref_name }}".TrimStart('v')
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DMyAppVersion="$tagVersion" script.iss
+
+      # -------------------------------------------------------------
+      # 7. Code-Sign the Inno Setup Output Installer
+      # -------------------------------------------------------------
+      - name: Code-Sign Installer EXE
+        shell: powershell
+        run: |
+          $signtool = (Get-ChildItem -Path "C:\Program Files (x86)\Windows Kits\10\bin" -Filter signtool.exe -Recurse | Select-Object -First 1).FullName
+          $cert = "$env:RUNNER_TEMP\my_signature.pfx"
+          $pass = "${{ secrets.CERT_PASSWORD }}"
+
+          $setupExe = (Get-ChildItem -Path "Output" -Filter *.exe | Select-Object -First 1).FullName
+          Write-Host "Signing Installer: $setupExe"
+          & $signtool sign /f $cert /p $pass /fd SHA256 /tr http://timestamp.digicert.com /td sha256 /v "$setupExe"
+
+      # -------------------------------------------------------------
+      # 8. Create Portable ZIP Package
+      # -------------------------------------------------------------
+      - name: Create Portable ZIP
+        shell: powershell
+        run: |
+          Compress-Archive -Path "dist\guiextract\*" -DestinationPath "Output\Gui_AkgXtract_Portable.zip"
+
+      # -------------------------------------------------------------
+      # 9. Clean up Certificate
+      # -------------------------------------------------------------
+      - name: Clean up Certificate
+        if: always()
+        shell: powershell
+        run: |
+          Remove-Item -Path "$env:RUNNER_TEMP\my_signature.pfx" -Force -ErrorAction SilentlyContinue
+
+      # -------------------------------------------------------------
+      # 10. Publish GitHub Release
+      # -------------------------------------------------------------
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: |
+            Output/*.exe
+            Output/*.zip
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
