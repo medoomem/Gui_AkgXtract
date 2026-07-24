@@ -36,6 +36,36 @@ C = {
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
+
+def _kill_process_tree(pid: int):
+    """ Recursively terminates a process and all child processes (curl.exe, bsdtar.exe) """
+    if sys.platform == "win32":
+        try:
+            import psutil
+            parent = psutil.Process(pid)
+            for child in parent.children(recursive=True):
+                try: child.kill()
+                except Exception: pass
+            parent.kill()
+            return
+        except ImportError:
+            pass
+
+        # Fallback for Windows process tree kill without popups
+        try:
+            subprocess.call(
+                ["taskkill", "/F", "/T", "/PID", str(pid)],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
+            )
+        except Exception:
+            pass
+    else:
+        try:
+            os.killpg(os.getpgid(pid), 9)
+        except Exception:
+            pass
+
 def get_resource_path(relative_path):
     """ Finds bundled files in Nuitka Onefile / standalone """
     base_path = os.path.dirname(__file__)
@@ -147,7 +177,8 @@ class ExtractGUI(ctk.CTk):
         super().__init__()
         self.title("Universal Archive Extractor")
         self.geometry("1020x670")
-        self.resizable(False, False)
+        self.resizable(True, True)
+        self.minsize(950, 600)
         self.configure(fg_color=C["bg"])
 
         self._exe     = find_exe()
@@ -171,7 +202,7 @@ class ExtractGUI(ctk.CTk):
 
         ctk.CTkLabel(header, text="⬡", font=("Segoe UI", 24, "bold"), text_color=C["cyan"]).pack(side="left", padx=(20, 10))
         ctk.CTkLabel(header, text="UNIVERSAL EXTRACTOR", font=("Segoe UI", 16, "bold"), text_color=C["text"]).pack(side="left")
-        ctk.CTkLabel(header, text="v1.1.2.8", font=("Segoe UI", 10, "bold"), fg_color=C["raised"], text_color=C["sub"], corner_radius=6, padx=8, pady=2).pack(side="left", padx=12)
+        ctk.CTkLabel(header, text="v1.3", font=("Segoe UI", 10, "bold"), fg_color=C["raised"], text_color=C["sub"], corner_radius=6, padx=8, pady=2).pack(side="left", padx=12)
 
         self._spinner = Spinner(header)
         self._spinner.pack(side="right", padx=20)
@@ -360,9 +391,13 @@ class ExtractGUI(ctk.CTk):
         self._log.configure(state="disabled")
 
     def _copy_log(self):
+        """ Native event copy selection (avoids low-level win32 clipboard hooks) """
         try:
-            self.clipboard_clear()
-            self.clipboard_append(self._log.get("1.0", "end"))
+            self._log.configure(state="normal")
+            self._log.tag_add("sel", "1.0", "end")
+            self._log.focus_set()
+            self.event_generate("<<Copy>>")
+            self._log.configure(state="disabled")
         except Exception: pass
 
     # ── Subprocess Execution & Extraction Logic ───────────────────────────────
@@ -401,21 +436,23 @@ class ExtractGUI(ctk.CTk):
 
         self._write_log(f"[*] Executing command: {' '.join(cmd)}")
         threading.Thread(target=self._run, args=(cmd,), daemon=True).start()
+    
 
+    
+    
     def _stop(self):
-        if self._proc:
-            try:
-                self._stop_btn.configure(state="disabled", fg_color=C["raised"])
-                if sys.platform == "win32":
-                    subprocess.call(['taskkill', '/F', '/T', '/PID', str(self._proc.pid)],
-                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                else:
-                    self._proc.terminate()
-                self._write_log("\n[!] User aborted process.")
-                self._mode_pill.configure(text="STOPPED", fg_color=C["card"], text_color=C["rose"])
-                self._spinner.stop()
-            except Exception as e:
-                self._write_log(f"\n[!] Error during stop: {str(e)}")
+            if self._proc:
+                try:
+                    self._stop_btn.configure(state="disabled", fg_color=C["raised"])
+                    
+                    # Perform full process tree termination
+                    _kill_process_tree(self._proc.pid)
+                    
+                    self._write_log("\n[!] Process tree and streaming pipes killed by user.")
+                    self._mode_pill.configure(text="STOPPED", fg_color=C["card"], text_color=C["rose"])
+                    self._spinner.stop()
+                except Exception as e:
+                    self._write_log(f"\n[!] Error during stop: {str(e)}")
 
     def _run(self, cmd):
         try:
