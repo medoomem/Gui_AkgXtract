@@ -49,8 +49,27 @@ jobs:
       # 3. Compile GUI Frontend with Nuitka
       # -------------------------------------------------------------
       - name: Compile GUI Frontend (guiextract.exe)
+        shell: powershell
         run: |
-          python -m nuitka --standalone --assume-yes-for-downloads --windows-console-mode=disable --enable-plugin=tk-inter --include-data-dir=customtkinter=customtkinter --windows-icon-from-ico=downloader_icon.ico --output-dir=build_gui --output-filename=guiextract.exe gui.py
+          # Automatically locate downloader_icon.ico if it lives in a subfolder
+          if (!(Test-Path "downloader_icon.ico")) {
+              $foundIcon = Get-ChildItem -Path . -Filter "downloader_icon.ico" -Recurse | Select-Object -First 1
+              if ($foundIcon) {
+                  Copy-Item $foundIcon.FullName -Destination "downloader_icon.ico"
+              }
+          }
+
+          # Prepare Nuitka command
+          $cmd = "python -m nuitka --standalone --assume-yes-for-downloads --windows-console-mode=disable --enable-plugin=tk-inter --include-data-dir=customtkinter=customtkinter --output-dir=build_gui --output-filename=guiextract.exe"
+
+          if (Test-Path "downloader_icon.ico") {
+              $cmd += " --windows-icon-from-ico=downloader_icon.ico"
+          } else {
+              Write-Host "[WARN] downloader_icon.ico not found. Compiling without icon."
+          }
+
+          $cmd += " gui.py"
+          Invoke-Expression $cmd
           
       # -------------------------------------------------------------
       # 4. Assemble Combined Directory Structure (dist/guiextract)
