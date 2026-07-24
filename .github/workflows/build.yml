@@ -27,7 +27,7 @@ jobs:
       - name: Install Python Dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install nuitka zstandard requests remotezip tqdm zipfile_deflate64 customtkinter pillow psutil
+          python -m pip install nuitka zstandard requests remotezip tqdm zipfile_deflate64 customtkinter pillow
 
       # -------------------------------------------------------------
       # 1. Decode PFX Certificate from GitHub Secrets
@@ -40,25 +40,20 @@ jobs:
           [IO.File]::WriteAllBytes($cert_path, $pfx_bytes)
 
       # -------------------------------------------------------------
-      # 2. Compile CLI Backend with Nuitka (Folder Mode + Metadata)
+      # 2. Compile CLI Backend with Nuitka (Folder Mode + Metadata + MSVC)
       # -------------------------------------------------------------
       - name: Compile CLI Backend (akgxtract.exe)
         shell: powershell
         run: |
           python -m nuitka --standalone `
                            --assume-yes-for-downloads `
-                           --company-name="Medoomem" `
-                           --product-name="AkgXtract" `
-                           --file-version="1.1.2.8" `
-                           --product-version="1.1.2.8" `
-                           --file-description="Universal Archive Extractor CLI Engine" `
-                           --copyright="Copyright (C) 2026 Medoomem" `
+                           --msvc=latest `
                            --output-dir=build_backend `
                            --output-filename=akgxtract.exe `
                            build2.py
 
       # -------------------------------------------------------------
-      # 3. Compile GUI Frontend with Nuitka (Folder Mode + Metadata)
+      # 3. Compile GUI Frontend with Nuitka (Folder Mode + Metadata + MSVC)
       # -------------------------------------------------------------
       - name: Compile GUI Frontend (guiextract.exe)
         shell: powershell
@@ -71,17 +66,29 @@ jobs:
               }
           }
 
-          # Prepare Nuitka command with Windows Version Resources Metadata
-          $cmd = "python -m nuitka --standalone --assume-yes-for-downloads --windows-console-mode=disable --enable-plugin=tk-inter --include-package-data=customtkinter --company-name='Medoomem' --product-name='Gui_AkgXtract' --file-version='1.1.2.8' --product-version='1.1.2.8' --file-description='Universal Archive Extractor GUI' --copyright='Copyright (C) 2026 Medoomem' --output-dir=build_gui --output-filename=guiextract.exe"
+          # Prepare Nuitka flags using MSVC compiler
+          $nuitkaArgs = @(
+            "-m", "nuitka",
+            "--standalone",
+            "--assume-yes-for-downloads",
+            "--msvc=latest",
+            "--windows-console-mode=disable",
+            "--enable-plugin=tk-inter",
+            "--include-package-data=customtkinter",
+            "--windows-icon-from-ico=downloader_icon.ico",
+            "--include-data-files=downloader_icon.ico=downloader_icon.ico",
+            "--output-dir=build_gui",
+            "--output-filename=guiextract.exe"
+        )
 
           if (Test-Path "downloader_icon.ico") {
-              $cmd += " --windows-icon-from-ico=downloader_icon.ico"
+              $nuitkaArgs += "--windows-icon-from-ico=downloader_icon.ico"
           } else {
               Write-Host "[WARN] downloader_icon.ico not found. Compiling without icon."
           }
 
-          $cmd += " gui.py"
-          Invoke-Expression $cmd
+          $nuitkaArgs += "gui.py"
+          python @nuitkaArgs
 
       # -------------------------------------------------------------
       # 4. Assemble Combined Directory Structure (dist/guiextract)
@@ -93,7 +100,7 @@ jobs:
 
           # Copy GUI files
           Copy-Item -Path "build_gui\gui.dist\*" -Destination "dist\guiextract\" -Recurse -Force
-          Copy-Item -Path "downloader_icon.ico" -Destination "dist\guiextract\" -Force
+          Copy-Item -Path "downloader_icon.ico" -Destination "dist\guiextract\" -Force -ErrorAction SilentlyContinue
 
           # Copy Backend files into backend/ subfolder
           Copy-Item -Path "build_backend\build2.dist\*" -Destination "dist\guiextract\backend\" -Recurse -Force
@@ -104,9 +111,9 @@ jobs:
           }
 
       # -------------------------------------------------------------
-      # 5. Code-Sign EXEs ONLY (guiextract.exe & akgxtract.exe)
+      # 5. Code-Sign ONLY guiextract.exe and akgxtract.exe
       # -------------------------------------------------------------
-      - name: Code-Sign Main Executables
+      - name: Code-Sign Primary Executables
         shell: powershell
         run: |
           $signtool = (Get-ChildItem -Path "C:\Program Files (x86)\Windows Kits\10\bin" -Filter signtool.exe -Recurse | Where-Object { $_.FullName -match "x64" } | Select-Object -First 1).FullName
@@ -115,17 +122,17 @@ jobs:
           $cert = "$env:RUNNER_TEMP\my_signature.pfx"
           $pass = "${{ secrets.CERT_PASSWORD }}"
 
-          $exesToSign = @(
+          $targets = @(
               "dist\guiextract\guiextract.exe",
               "dist\guiextract\backend\akgxtract.exe"
           )
 
-          foreach ($exe in $exesToSign) {
-              if (Test-Path $exe) {
-                  Write-Host "Signing Executable: $exe"
-                  & $signtool sign /f $cert /p $pass /fd SHA256 /tr http://timestamp.digicert.com /td sha256 /v "$exe"
+          foreach ($file in $targets) {
+              if (Test-Path $file) {
+                  Write-Host "Signing: $file"
+                  & $signtool sign /f $cert /p $pass /fd SHA256 /tr http://timestamp.digicert.com /td sha256 /v "$file"
               } else {
-                  Write-Host "[WARN] File not found to sign: $exe"
+                  Write-Host "[WARN] Executable to sign not found: $file"
               }
           }
 
