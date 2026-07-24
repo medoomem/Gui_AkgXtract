@@ -59,8 +59,8 @@ jobs:
               }
           }
 
-          # Prepare Nuitka command
-          $cmd = "python -m nuitka --standalone --assume-yes-for-downloads --windows-console-mode=disable --enable-plugin=tk-inter --include-data-dir=customtkinter=customtkinter --output-dir=build_gui --output-filename=guiextract.exe"
+          # Prepare Nuitka command using --include-package-data=customtkinter
+          $cmd = "python -m nuitka --standalone --assume-yes-for-downloads --windows-console-mode=disable --enable-plugin=tk-inter --include-package-data=customtkinter --output-dir=build_gui --output-filename=guiextract.exe"
 
           if (Test-Path "downloader_icon.ico") {
               $cmd += " --windows-icon-from-ico=downloader_icon.ico"
