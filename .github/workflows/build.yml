@@ -39,19 +39,19 @@ jobs:
           [IO.File]::WriteAllBytes($cert_path, $pfx_bytes)
 
       # -------------------------------------------------------------
-      # 2. Compile CLI Backend with Nuitka (Folder Mode)
+      # 2. Compile CLI Backend with Nuitka
       # -------------------------------------------------------------
       - name: Compile CLI Backend (akgxtract.exe)
         run: |
-          python -m nuitka --standalone --output-dir=build_backend --output-filename=akgxtract.exe build2.py
+          python -m nuitka --standalone --assume-yes-for-downloads --output-dir=build_backend --output-filename=akgxtract.exe build2.py
 
       # -------------------------------------------------------------
-      # 3. Compile GUI Frontend with Nuitka (Folder Mode)
+      # 3. Compile GUI Frontend with Nuitka
       # -------------------------------------------------------------
       - name: Compile GUI Frontend (guiextract.exe)
         run: |
-          python -m nuitka --standalone --windows-console-mode=disable --enable-plugin=tk-inter --include-data-dir=customtkinter=customtkinter --windows-icon-from-ico=downloader_icon.ico --output-dir=build_gui --output-filename=guiextract.exe gui.py
-
+          python -m nuitka --standalone --assume-yes-for-downloads --windows-console-mode=disable --enable-plugin=tk-inter --include-data-dir=customtkinter=customtkinter --windows-icon-from-ico=downloader_icon.ico --output-dir=build_gui --output-filename=guiextract.exe gui.py
+          
       # -------------------------------------------------------------
       # 4. Assemble Combined Directory Structure (dist/guiextract)
       # -------------------------------------------------------------
