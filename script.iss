@@ -1,7 +1,7 @@
 ; Script for Gui_AkgXtract - Clean Per-User Setup
 #define MyAppName "Gui_AkgXtract"
 #ifndef MyAppVersion
-  #define MyAppVersion "1.1.2.8"
+  #define MyAppVersion "1.1.2.10"
 #endif
 #define MyAppPublisher "Medoomem"
 #define MyAppExeName "guiextract.exe"
