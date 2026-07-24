@@ -22,7 +22,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          cache: 'pip'
 
       - name: Install Python Dependencies
         run: |
@@ -68,18 +67,16 @@ jobs:
 
           # Prepare Nuitka flags using MSVC compiler
           $nuitkaArgs = @(
-            "-m", "nuitka",
-            "--standalone",
-            "--assume-yes-for-downloads",
-            "--msvc=latest",
-            "--windows-console-mode=disable",
-            "--enable-plugin=tk-inter",
-            "--include-package-data=customtkinter",
-            "--windows-icon-from-ico=downloader_icon.ico",
-            "--include-data-files=downloader_icon.ico=downloader_icon.ico",
-            "--output-dir=build_gui",
-            "--output-filename=guiextract.exe"
-        )
+              "-m", "nuitka",
+              "--standalone",
+              "--assume-yes-for-downloads",
+              "--msvc=latest",
+              "--windows-console-mode=disable",
+              "--enable-plugin=tk-inter",
+              "--include-package-data=customtkinter",
+              "--output-dir=build_gui",
+              "--output-filename=guiextract.exe"
+          )
 
           if (Test-Path "downloader_icon.ico") {
               $nuitkaArgs += "--windows-icon-from-ico=downloader_icon.ico"
