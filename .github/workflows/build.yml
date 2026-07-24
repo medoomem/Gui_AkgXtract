@@ -27,7 +27,7 @@ jobs:
       - name: Install Python Dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install nuitka zstandard requests remotezip tqdm zipfile_deflate64 customtkinter pillow
+          python -m pip install nuitka zstandard requests remotezip tqdm zipfile_deflate64 customtkinter pillow psutil
 
       # -------------------------------------------------------------
       # 1. Decode PFX Certificate from GitHub Secrets
@@ -104,9 +104,9 @@ jobs:
           }
 
       # -------------------------------------------------------------
-      # 5. Code-Sign ALL EXEs, DLLs, and PYDs inside dist/guiextract
+      # 5. Code-Sign EXEs ONLY (guiextract.exe & akgxtract.exe)
       # -------------------------------------------------------------
-      - name: Code-Sign All Binaries
+      - name: Code-Sign Main Executables
         shell: powershell
         run: |
           $signtool = (Get-ChildItem -Path "C:\Program Files (x86)\Windows Kits\10\bin" -Filter signtool.exe -Recurse | Where-Object { $_.FullName -match "x64" } | Select-Object -First 1).FullName
@@ -115,10 +115,18 @@ jobs:
           $cert = "$env:RUNNER_TEMP\my_signature.pfx"
           $pass = "${{ secrets.CERT_PASSWORD }}"
 
-          $binaries = Get-ChildItem -Path "dist\guiextract" -Include *.exe, *.dll, *.pyd -Recurse
-          foreach ($file in $binaries) {
-              Write-Host "Signing: $($file.FullName)"
-              & $signtool sign /f $cert /p $pass /fd SHA256 /tr http://timestamp.digicert.com /td sha256 /v "$($file.FullName)"
+          $exesToSign = @(
+              "dist\guiextract\guiextract.exe",
+              "dist\guiextract\backend\akgxtract.exe"
+          )
+
+          foreach ($exe in $exesToSign) {
+              if (Test-Path $exe) {
+                  Write-Host "Signing Executable: $exe"
+                  & $signtool sign /f $cert /p $pass /fd SHA256 /tr http://timestamp.digicert.com /td sha256 /v "$exe"
+              } else {
+                  Write-Host "[WARN] File not found to sign: $exe"
+              }
           }
 
       # -------------------------------------------------------------
