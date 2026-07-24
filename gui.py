@@ -202,7 +202,7 @@ class ExtractGUI(ctk.CTk):
 
         ctk.CTkLabel(header, text="⬡", font=("Segoe UI", 24, "bold"), text_color=C["cyan"]).pack(side="left", padx=(20, 10))
         ctk.CTkLabel(header, text="UNIVERSAL EXTRACTOR", font=("Segoe UI", 16, "bold"), text_color=C["text"]).pack(side="left")
-        ctk.CTkLabel(header, text="v1.1.2.10", font=("Segoe UI", 10, "bold"), fg_color=C["raised"], text_color=C["sub"], corner_radius=6, padx=8, pady=2).pack(side="left", padx=12)
+        ctk.CTkLabel(header, text="v1.1.3.0", font=("Segoe UI", 10, "bold"), fg_color=C["raised"], text_color=C["sub"], corner_radius=6, padx=8, pady=2).pack(side="left", padx=12)
 
         self._spinner = Spinner(header)
         self._spinner.pack(side="right", padx=20)
