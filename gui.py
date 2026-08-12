@@ -9,6 +9,7 @@ import os
 import sys
 import re
 from pathlib import Path
+import requests
 
 # ─── Theme & Palette ──────────────────────────────────────────────────────────
 
@@ -36,6 +37,26 @@ C = {
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
+
+def resolve_ankergames_url(url: str) -> str:
+    """ Resolves an AnkerGames URL to its real direct download stream link """
+    if "ankergames" not in url.lower():
+        return url
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "*/*"
+    }
+    try:
+        # stream=True gets ONLY the redirect response headers without downloading file content
+        with requests.get(url, headers=headers, stream=True, allow_redirects=True, timeout=10) as response:
+            direct_url = response.url
+            if direct_url and direct_url != url:
+                return direct_url
+    except Exception as e:
+        print(f"Error resolving AnkerGames URL: {e}")
+        
+    return url
 
 def _kill_process_tree(pid: int):
     """ Recursively terminates a process and all child processes (curl.exe, bsdtar.exe) """
@@ -202,7 +223,7 @@ class ExtractGUI(ctk.CTk):
 
         ctk.CTkLabel(header, text="⬡", font=("Segoe UI", 24, "bold"), text_color=C["cyan"]).pack(side="left", padx=(20, 10))
         ctk.CTkLabel(header, text="UNIVERSAL EXTRACTOR", font=("Segoe UI", 16, "bold"), text_color=C["text"]).pack(side="left")
-        ctk.CTkLabel(header, text="v1.1.3.0", font=("Segoe UI", 10, "bold"), fg_color=C["raised"], text_color=C["sub"], corner_radius=6, padx=8, pady=2).pack(side="left", padx=12)
+        ctk.CTkLabel(header, text="v1.1.3.1", font=("Segoe UI", 10, "bold"), fg_color=C["raised"], text_color=C["sub"], corner_radius=6, padx=8, pady=2).pack(side="left", padx=12)
 
         self._spinner = Spinner(header)
         self._spinner.pack(side="right", padx=20)
@@ -372,7 +393,17 @@ class ExtractGUI(ctk.CTk):
     def _paste(self):
         try:
             txt = self.clipboard_get().strip()
-            if txt: self._url.set(txt)
+            if txt:
+                self._url.set(txt)
+                # Auto-resolve if user pastes an AnkerGames link
+                if "ankergames" in txt.lower():
+                    self._write_log("[*] AnkerGames URL detected. Resolving direct link...")
+                    def _async_paste_resolve():
+                        real_url = resolve_ankergames_url(txt)
+                        if real_url and real_url != txt:
+                            self.after(0, lambda: self._url.set(real_url))
+                            self.after(0, lambda: self._write_log(f"[*] Resolved URL: {real_url}"))
+                    threading.Thread(target=_async_paste_resolve, daemon=True).start()
         except Exception: pass
 
     def _browse(self):
@@ -410,6 +441,18 @@ class ExtractGUI(ctk.CTk):
             return
 
         self._clear_log()
+
+        # Check and convert AnkerGames URL automatically if present
+        if "ankergames" in url.lower():
+            self._write_log("[*] AnkerGames URL detected. Resolving direct download link...")
+            real_url = resolve_ankergames_url(url)
+            if real_url and real_url != url:
+                self._write_log(f"[*] Resolved Direct Link: {real_url}")
+                self._url.set(real_url)
+                url = real_url
+            else:
+                self._write_log("[!] Warning: Could not resolve direct link, proceeding with original URL.")
+
         self._running = True
         self._start_btn.configure(state="disabled", fg_color=C["raised"], text_color=C["sub"])
         self._stop_btn.configure(state="normal", fg_color=C["rose"])
