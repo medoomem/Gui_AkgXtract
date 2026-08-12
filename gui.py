@@ -123,7 +123,7 @@ class SectionHeader(ctk.CTkFrame):
 
 class StatCard(ctk.CTkFrame):
     def __init__(self, parent, title: str, accent_color: str, **kw):
-        super().__init__(parent, fg_color=C["card"], corner_radius=10,
+        super().__init__(parent, fg_color=C["card"], corner_radius=12,
                           border_width=1, border_color=C["border"], **kw)
         self._accent = accent_color
         ctk.CTkLabel(self, text=title, font=("Segoe UI", 10, "bold"),
@@ -188,7 +188,7 @@ class Spinner(ctk.CTkLabel):
 # ─── Main GUI Application ─────────────────────────────────────────────────────
 
 class ExtractGUI(ctk.CTk):
-    _RE_TQDM = re.compile(r"(Total|Files|Extracting)[:\s]+(\d+)%.*?([\d\.]+\s*\w+)\s*/\s*([\d\.]+\s*\w+).*?\[([^\]]+)\]")
+    _RE_TQDM = re.compile(r"(Total|Files|Extracting)[:\s]+(\d+)%.*?([\d\.]+(?:\s*\w+)?)\s*/\s*([\d\.]+(?:\s*\w+)?).*?\[([^\]]+)\]")
     _RE_POST = re.compile(r"Out:\s*([^\|]+)\s*\|\s*Ratio:\s*([^\|]+)\s*\|\s*Est\. Total:\s*(.+)")
     _RE_BOX  = re.compile(r"│\s{2}([^:│]+?)\s*:\s*([^│\n]+?)\s*│")
     _RE_RATE = re.compile(r"([\d\.]+\s*[KMGT]?B/s)")
@@ -230,6 +230,10 @@ class ExtractGUI(ctk.CTk):
         self._mode_pill = ctk.CTkLabel(header, text="READY", font=("Segoe UI", 11, "bold"), fg_color=C["card"], text_color=C["sub"], corner_radius=6, padx=10, pady=4)
         self._mode_pill.pack(side="right", padx=10)
 
+        # ── Header Separator ──────────────────────────────────────────────────
+        header_sep = ctk.CTkFrame(self, height=1, fg_color=C["border"], corner_radius=0)
+        header_sep.pack(fill="x")
+
         # ── Main 2-Column Grid Layout ─────────────────────────────────────────
         main_grid = ctk.CTkFrame(self, fg_color="transparent")
         main_grid.pack(fill="both", expand=True, padx=20, pady=15)
@@ -237,39 +241,46 @@ class ExtractGUI(ctk.CTk):
         main_grid.columnconfigure(1, weight=5) # Right Column (Dashboard)
         main_grid.rowconfigure(0, weight=1)
 
-        # ── LEFT PANEL: CONFIGURATION & INPUTS ────────────────────────────────
-        left_panel = ctk.CTkFrame(main_grid, fg_color="transparent")
+        # ── LEFT PANEL: CONFIGURATION & INPUTS (Translucent Glass Slab) ───────
+        left_panel = ctk.CTkFrame(main_grid, fg_color=C["panel"], corner_radius=16, border_width=1, border_color=C["border"])
         left_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
 
+        left_inner = ctk.CTkFrame(left_panel, fg_color="transparent")
+        left_inner.pack(fill="both", expand=True, padx=20, pady=20)
+
         # 1. Source URL
-        SectionHeader(left_panel, "SOURCE ARCHIVE URL").pack(fill="x", pady=(0, 8))
-        src_card = ctk.CTkFrame(left_panel, fg_color=C["panel"], corner_radius=10, border_width=1, border_color=C["border"])
+        SectionHeader(left_inner, "SOURCE ARCHIVE URL").pack(fill="x", pady=(0, 8))
+        src_card = ctk.CTkFrame(left_inner, fg_color=C["card"], corner_radius=12, border_width=1, border_color=C["border"])
         src_card.pack(fill="x", pady=(0, 15))
 
         url_row = ctk.CTkFrame(src_card, fg_color="transparent")
         url_row.pack(fill="x", padx=12, pady=12)
         self._url = tk.StringVar()
-        ctk.CTkEntry(url_row, textvariable=self._url, placeholder_text="Paste direct download URL (ZIP, RAR, TAR, 7Z...)",
-                       height=36, font=("Segoe UI", 12), fg_color=C["raised"], border_color=C["border"]).pack(side="left", fill="x", expand=True, padx=(0, 8))
+        self._url_entry = ctk.CTkEntry(url_row, textvariable=self._url, placeholder_text="Paste direct download URL (ZIP, RAR, TAR, 7Z...)",
+                       height=36, font=("Segoe UI", 12), fg_color=C["raised"], border_color=C["border"])
+        self._url_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        self._url_entry.bind("<Return>", lambda event: self._start())
         ctk.CTkButton(url_row, text="Paste", width=65, height=36, font=("Segoe UI", 12, "bold"),
                       fg_color=C["raised"], hover_color=C["card"], text_color=C["cyan"], command=self._paste).pack(side="right")
 
         # 2. Destination Folder
-        SectionHeader(left_panel, "TARGET DESTINATION").pack(fill="x", pady=(0, 8))
-        dest_card = ctk.CTkFrame(left_panel, fg_color=C["panel"], corner_radius=10, border_width=1, border_color=C["border"])
+        SectionHeader(left_inner, "TARGET DESTINATION").pack(fill="x", pady=(0, 8))
+        dest_card = ctk.CTkFrame(left_inner, fg_color=C["card"], corner_radius=12, border_width=1, border_color=C["border"])
         dest_card.pack(fill="x", pady=(0, 15))
 
         dest_row = ctk.CTkFrame(dest_card, fg_color="transparent")
         dest_row.pack(fill="x", padx=12, pady=12)
         self._out = tk.StringVar(value=str(Path.cwd() / "extracted"))
-        ctk.CTkEntry(dest_row, textvariable=self._out, height=36, font=("Segoe UI", 12),
-                       fg_color=C["raised"], border_color=C["border"]).pack(side="left", fill="x", expand=True, padx=(0, 8))
+        self._dest_entry = ctk.CTkEntry(dest_row, textvariable=self._out, height=36, font=("Segoe UI", 12),
+                       fg_color=C["raised"], border_color=C["border"])
+        self._dest_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        self._dest_entry.bind("<Return>", lambda event: self._start())
         ctk.CTkButton(dest_row, text="Browse", width=65, height=36, font=("Segoe UI", 12, "bold"),
                       fg_color=C["purple"], hover_color=C["purple_hover"], command=self._browse).pack(side="right")
 
         # 3. Extraction Options
-        SectionHeader(left_panel, "EXTRACTION MODE & OPTIONS").pack(fill="x", pady=(0, 8))
-        opt_card = ctk.CTkFrame(left_panel, fg_color=C["panel"], corner_radius=10, border_width=1, border_color=C["border"])
+        SectionHeader(left_inner, "EXTRACTION MODE & OPTIONS").pack(fill="x", pady=(0, 8))
+        opt_card = ctk.CTkFrame(left_inner, fg_color=C["card"], corner_radius=12, border_width=1, border_color=C["border"])
         opt_card.pack(fill="x", pady=(0, 15))
 
         # Checkboxes (Force Stream Checked by default!)
@@ -313,7 +324,7 @@ class ExtractGUI(ctk.CTk):
         self._toggle_workers_state()
 
         # 4. Action Control Buttons
-        btn_box = ctk.CTkFrame(left_panel, fg_color="transparent")
+        btn_box = ctk.CTkFrame(left_inner, fg_color="transparent")
         btn_box.pack(fill="x", side="bottom", pady=(10, 0))
 
         self._start_btn = ctk.CTkButton(btn_box, text="START EXTRACTION", height=48,
@@ -326,13 +337,16 @@ class ExtractGUI(ctk.CTk):
                                         hover_color=C["rose"], text_color=C["text"], state="disabled", command=self._stop)
         self._stop_btn.pack(side="right")
 
-        # ── RIGHT PANEL: LIVE DASHBOARD & STATS ───────────────────────────────
-        right_panel = ctk.CTkFrame(main_grid, fg_color="transparent")
+        # ── RIGHT PANEL: LIVE DASHBOARD & STATS (Translucent Glass Slab) ──────
+        right_panel = ctk.CTkFrame(main_grid, fg_color=C["panel"], corner_radius=16, border_width=1, border_color=C["border"])
         right_panel.grid(row=0, column=1, sticky="nsew", padx=(10, 0))
 
+        right_inner = ctk.CTkFrame(right_panel, fg_color="transparent")
+        right_inner.pack(fill="both", expand=True, padx=20, pady=20)
+
         # 1. Hero 2x2 Stats Grid
-        SectionHeader(right_panel, "LIVE METRICS").pack(fill="x", pady=(0, 8))
-        stats_grid = ctk.CTkFrame(right_panel, fg_color="transparent")
+        SectionHeader(right_inner, "LIVE METRICS").pack(fill="x", pady=(0, 8))
+        stats_grid = ctk.CTkFrame(right_inner, fg_color="transparent")
         stats_grid.pack(fill="x", pady=(0, 15))
         stats_grid.columnconfigure((0, 1), weight=1)
 
@@ -349,8 +363,8 @@ class ExtractGUI(ctk.CTk):
         self._c_disk.grid(row=1, column=1, sticky="ew", padx=(4, 0))
 
         # 2. Dual Progress Bars
-        SectionHeader(right_panel, "PROGRESS DISPATCH").pack(fill="x", pady=(0, 8))
-        prog_card = ctk.CTkFrame(right_panel, fg_color=C["panel"], corner_radius=10, border_width=1, border_color=C["border"])
+        SectionHeader(right_inner, "PROGRESS DISPATCH").pack(fill="x", pady=(0, 8))
+        prog_card = ctk.CTkFrame(right_inner, fg_color=C["card"], corner_radius=12, border_width=1, border_color=C["border"])
         prog_card.pack(fill="x", pady=(0, 15))
 
         self._pb_total = StyledProgress(prog_card, "STREAM PROGRESS", color=C["cyan"])
@@ -360,8 +374,8 @@ class ExtractGUI(ctk.CTk):
         self._pb_files.pack(fill="x", padx=12, pady=(0, 12))
 
         # 3. Terminal Console Drawer
-        SectionHeader(right_panel, "CONSOLE LOGS").pack(fill="x", pady=(0, 8))
-        log_card = ctk.CTkFrame(right_panel, fg_color=C["panel"], corner_radius=10, border_width=1, border_color=C["border"])
+        SectionHeader(right_inner, "CONSOLE LOGS").pack(fill="x", pady=(0, 8))
+        log_card = ctk.CTkFrame(right_inner, fg_color=C["card"], corner_radius=12, border_width=1, border_color=C["border"])
         log_card.pack(fill="both", expand=True)
 
         log_hdr = ctk.CTkFrame(log_card, fg_color="transparent", height=28)
@@ -371,7 +385,7 @@ class ExtractGUI(ctk.CTk):
         ctk.CTkButton(log_hdr, text="Clear", width=50, height=20, font=("Segoe UI", 10), fg_color="transparent", hover_color=C["raised"], text_color=C["sub"], command=self._clear_log).pack(side="right")
         ctk.CTkButton(log_hdr, text="Copy", width=50, height=20, font=("Segoe UI", 10), fg_color="transparent", hover_color=C["raised"], text_color=C["sub"], command=self._copy_log).pack(side="right", padx=2)
 
-        self._log = ctk.CTkTextbox(log_card, font=("Consolas", 10), fg_color=C["bg"], text_color=C["text"], border_width=0)
+        self._log = ctk.CTkTextbox(log_card, font=("Consolas", 10), fg_color=C["raised"], text_color=C["text"], border_width=0)
         self._log.pack(fill="both", expand=True, padx=8, pady=8)
         self._log.configure(state="disabled")
 
@@ -438,6 +452,11 @@ class ExtractGUI(ctk.CTk):
         out = self._out.get().strip()
         if not url:
             self._write_log("[!] ERROR: URL field is empty.")
+            messagebox.showerror("Error", "URL field cannot be empty.")
+            return
+        if not (url.lower().startswith("http://") or url.lower().startswith("https://")):
+            self._write_log("[!] ERROR: Invalid URL protocol. URL must start with http:// or https://")
+            messagebox.showerror("Error", "Invalid URL protocol. URL must start with http:// or https://")
             return
 
         self._clear_log()
@@ -531,8 +550,10 @@ class ExtractGUI(ctk.CTk):
                             self._mode_pill.configure(text="FINISHED ✓", fg_color=C["card"], text_color=C["emerald"])
                         else:
                             self._mode_pill.configure(text=f"EXIT {val}", fg_color=C["card"], text_color=C["rose"])
+                            messagebox.showerror("Extraction Error", f"The extraction backend finished with exit code {val}.\nPlease check the console logs for details.")
                 elif msg == "error":
                     self._write_log(f"Process Error: {val}")
+                    messagebox.showerror("Process Error", f"Failed to start/run the extraction process:\n{val}")
         except queue.Empty:
             pass
         self.after(100, self._poll)
