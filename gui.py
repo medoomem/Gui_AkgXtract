@@ -37,7 +37,6 @@ C = {
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
-
 def resolve_ankergames_url(url: str) -> str:
     """ Resolves an AnkerGames URL to its real direct download stream link """
     if "ankergames" not in url.lower():
@@ -48,7 +47,6 @@ def resolve_ankergames_url(url: str) -> str:
         "Accept": "*/*"
     }
     try:
-        # stream=True gets ONLY the redirect response headers without downloading file content
         with requests.get(url, headers=headers, stream=True, allow_redirects=True, timeout=10) as response:
             direct_url = response.url
             if direct_url and direct_url != url:
@@ -72,7 +70,6 @@ def _kill_process_tree(pid: int):
         except ImportError:
             pass
 
-        # Fallback for Windows process tree kill without popups
         try:
             subprocess.call(
                 ["taskkill", "/F", "/T", "/PID", str(pid)],
@@ -100,7 +97,9 @@ def find_exe() -> str:
     bundled = get_resource_path(os.path.join("backend", exe_name))
     if os.path.exists(bundled):
         return bundled
-    return exe_name
+    if os.path.exists(exe_name):
+        return exe_name
+    return "build2.py"
 
 def _popen_kwargs() -> dict:
     kw = {}
@@ -223,7 +222,7 @@ class ExtractGUI(ctk.CTk):
 
         ctk.CTkLabel(header, text="⬡", font=("Segoe UI", 24, "bold"), text_color=C["cyan"]).pack(side="left", padx=(20, 10))
         ctk.CTkLabel(header, text="UNIVERSAL EXTRACTOR", font=("Segoe UI", 16, "bold"), text_color=C["text"]).pack(side="left")
-        ctk.CTkLabel(header, text="v1.1.3.2", font=("Segoe UI", 10, "bold"), fg_color=C["raised"], text_color=C["sub"], corner_radius=6, padx=8, pady=2).pack(side="left", padx=12)
+        ctk.CTkLabel(header, text="v1.1.3.3", font=("Segoe UI", 10, "bold"), fg_color=C["raised"], text_color=C["sub"], corner_radius=6, padx=8, pady=2).pack(side="left", padx=12)
 
         self._spinner = Spinner(header)
         self._spinner.pack(side="right", padx=20)
@@ -267,50 +266,36 @@ class ExtractGUI(ctk.CTk):
         ctk.CTkButton(dest_row, text="Browse", width=65, height=36, font=("Segoe UI", 12, "bold"),
                       fg_color=C["purple"], hover_color=C["purple_hover"], command=self._browse).pack(side="right")
 
-        # 3. Extraction Options
-        SectionHeader(left_panel, "EXTRACTION MODE & OPTIONS").pack(fill="x", pady=(0, 8))
+        # 3. Extraction Options (Refined & Modernized)
+        SectionHeader(left_panel, "EXTRACTION ENGINE & OPTIONS").pack(fill="x", pady=(0, 8))
         opt_card = ctk.CTkFrame(left_panel, fg_color=C["panel"], corner_radius=10, border_width=1, border_color=C["border"])
         opt_card.pack(fill="x", pady=(0, 15))
 
-        # Checkboxes (Force Stream Checked by default!)
-        self._fstrm = tk.BooleanVar(value=True)  # DEFAULT TRUE!
-        self._skip  = tk.BooleanVar(value=True)  # DEFAULT TRUE!
+        self._skip  = tk.BooleanVar(value=True)  # Auto-resume default ON
+        self._fstrm = tk.BooleanVar(value=True)  # Stream mode default ON
         self._fzip  = tk.BooleanVar(value=False)
         self._info  = tk.BooleanVar(value=False)
 
         chk_grid = ctk.CTkFrame(opt_card, fg_color="transparent")
-        chk_grid.pack(fill="x", padx=12, pady=10)
+        chk_grid.pack(fill="x", padx=12, pady=(10, 6))
 
-        ctk.CTkCheckBox(chk_grid, text="Force Stream Mode (curl | bsdtar)", variable=self._fstrm,
-                        command=self._toggle_workers_state, font=("Segoe UI", 12, "bold"),
-                        text_color=C["cyan"], fg_color=C["cyan"], checkmark_color=C["bg"]).grid(row=0, column=0, columnspan=2, sticky="w", pady=6)
+        ctk.CTkCheckBox(chk_grid, text="Skip Existing (Auto-Resume .akg_resume)", variable=self._skip,
+                        font=("Segoe UI", 12, "bold"), text_color=C["emerald"], fg_color=C["emerald"], checkmark_color=C["bg"]).grid(row=0, column=0, columnspan=2, sticky="w", pady=5)
 
-        ctk.CTkCheckBox(chk_grid, text="Skip Existing Files (Auto-Resume)", variable=self._skip,
-                        font=("Segoe UI", 12), text_color=C["text"], fg_color=C["cyan"]).grid(row=1, column=0, sticky="w", pady=6)
+        ctk.CTkCheckBox(chk_grid, text="Force Streaming Pipe", variable=self._fstrm,
+                        font=("Segoe UI", 12), text_color=C["text"], fg_color=C["cyan"]).grid(row=1, column=0, sticky="w", pady=5)
 
         ctk.CTkCheckBox(chk_grid, text="Force ZIP Mode", variable=self._fzip,
-                        font=("Segoe UI", 12), text_color=C["text"], fg_color=C["cyan"]).grid(row=2, column=0, sticky="w", pady=6)
+                        font=("Segoe UI", 12), text_color=C["text"], fg_color=C["cyan"]).grid(row=1, column=1, sticky="w", pady=5)
 
-        ctk.CTkCheckBox(chk_grid, text="Show Info Only", variable=self._info,
-                        font=("Segoe UI", 12), text_color=C["text"], fg_color=C["cyan"]).grid(row=2, column=1, sticky="w", pady=6)
+        ctk.CTkCheckBox(chk_grid, text="Inspect Archive Info Only (--info)", variable=self._info,
+                        font=("Segoe UI", 12), text_color=C["text"], fg_color=C["cyan"]).grid(row=2, column=0, columnspan=2, sticky="w", pady=5)
 
-        # Worker Slider
-        sl_frame = ctk.CTkFrame(opt_card, fg_color="transparent")
-        sl_frame.pack(fill="x", padx=12, pady=(0, 12))
-        
-        sl_top = ctk.CTkFrame(sl_frame, fg_color="transparent")
-        sl_top.pack(fill="x")
-        ctk.CTkLabel(sl_top, text="Parallel Connections:", font=("Segoe UI", 11), text_color=C["sub"]).pack(side="left")
-        self._worker_lbl = ctk.CTkLabel(sl_top, text="Stream Active", font=("Consolas", 11, "bold"), text_color=C["sub"])
-        self._worker_lbl.pack(side="right")
-
-        self._workers = tk.IntVar(value=4)
-        self._worker_slider = ctk.CTkSlider(sl_frame, from_=1, to=32, number_of_steps=31,
-                                             variable=self._workers, command=self._on_slider_change)
-        self._worker_slider.pack(fill="x", pady=(4, 0))
-
-        # Initial slider state setup
-        self._toggle_workers_state()
+        # Engine Architecture Info Banner
+        engine_banner = ctk.CTkFrame(opt_card, fg_color=C["raised"], corner_radius=6)
+        engine_banner.pack(fill="x", padx=12, pady=(4, 12))
+        ctk.CTkLabel(engine_banner, text="⚡ Engine: Index-First ZIP (No Desync) + C-Speed RAR/TAR",
+                     font=("Consolas", 10), text_color=C["cyan"]).pack(pady=6, padx=8)
 
         # 4. Action Control Buttons
         btn_box = ctk.CTkFrame(left_panel, fg_color="transparent")
@@ -353,10 +338,10 @@ class ExtractGUI(ctk.CTk):
         prog_card = ctk.CTkFrame(right_panel, fg_color=C["panel"], corner_radius=10, border_width=1, border_color=C["border"])
         prog_card.pack(fill="x", pady=(0, 15))
 
-        self._pb_total = StyledProgress(prog_card, "STREAM PROGRESS", color=C["cyan"])
+        self._pb_total = StyledProgress(prog_card, "STREAM & EXTRACTION", color=C["cyan"])
         self._pb_total.pack(fill="x", padx=12, pady=12)
 
-        self._pb_files = StyledProgress(prog_card, "FILE BATCH", color=C["purple"])
+        self._pb_files = StyledProgress(prog_card, "FILE STATUS", color=C["purple"])
         self._pb_files.pack(fill="x", padx=12, pady=(0, 12))
 
         # 3. Terminal Console Drawer
@@ -377,25 +362,11 @@ class ExtractGUI(ctk.CTk):
 
     # ── Interactivity & Event Handlers ────────────────────────────────────────
 
-    def _toggle_workers_state(self):
-        """ Dynamically enables/disables worker slider based on Force Stream """
-        if self._fstrm.get():
-            self._worker_slider.configure(state="disabled", progress_color=C["dim"], button_color=C["muted"])
-            self._worker_lbl.configure(text="Single Pipe (Stream)", text_color=C["sub"])
-        else:
-            self._worker_slider.configure(state="normal", progress_color=C["cyan"], button_color=C["cyan"])
-            self._worker_lbl.configure(text=f"{int(self._workers.get())} Threads", text_color=C["cyan"])
-
-    def _on_slider_change(self, val):
-        if not self._fstrm.get():
-            self._worker_lbl.configure(text=f"{int(val)} Threads", text_color=C["cyan"])
-
     def _paste(self):
         try:
             txt = self.clipboard_get().strip()
             if txt:
                 self._url.set(txt)
-                # Auto-resolve if user pastes an AnkerGames link
                 if "ankergames" in txt.lower():
                     self._write_log("[*] AnkerGames URL detected. Resolving direct link...")
                     def _async_paste_resolve():
@@ -422,7 +393,6 @@ class ExtractGUI(ctk.CTk):
         self._log.configure(state="disabled")
 
     def _copy_log(self):
-        """ Native event copy selection (avoids low-level win32 clipboard hooks) """
         try:
             self._log.configure(state="normal")
             self._log.tag_add("sel", "1.0", "end")
@@ -442,7 +412,6 @@ class ExtractGUI(ctk.CTk):
 
         self._clear_log()
 
-        # Check and convert AnkerGames URL automatically if present
         if "ankergames" in url.lower():
             self._write_log("[*] AnkerGames URL detected. Resolving direct download link...")
             real_url = resolve_ankergames_url(url)
@@ -475,27 +444,20 @@ class ExtractGUI(ctk.CTk):
         if self._info.get():  cmd.append("--info")
         if self._fzip.get():  cmd.append("--force-zip")
         if self._fstrm.get(): cmd.append("--force-stream")
-        cmd += ["--workers", str(int(self._workers.get()))]
 
         self._write_log(f"[*] Executing command: {' '.join(cmd)}")
         threading.Thread(target=self._run, args=(cmd,), daemon=True).start()
-    
 
-    
-    
     def _stop(self):
-            if self._proc:
-                try:
-                    self._stop_btn.configure(state="disabled", fg_color=C["raised"])
-                    
-                    # Perform full process tree termination
-                    _kill_process_tree(self._proc.pid)
-                    
-                    self._write_log("\n[!] Process tree and streaming pipes killed by user.")
-                    self._mode_pill.configure(text="STOPPED", fg_color=C["card"], text_color=C["rose"])
-                    self._spinner.stop()
-                except Exception as e:
-                    self._write_log(f"\n[!] Error during stop: {str(e)}")
+        if self._proc:
+            try:
+                self._stop_btn.configure(state="disabled", fg_color=C["raised"])
+                _kill_process_tree(self._proc.pid)
+                self._write_log("\n[!] Process tree and streaming pipes killed by user.")
+                self._mode_pill.configure(text="STOPPED", fg_color=C["card"], text_color=C["rose"])
+                self._spinner.stop()
+            except Exception as e:
+                self._write_log(f"\n[!] Error during stop: {str(e)}")
 
     def _run(self, cmd):
         try:
@@ -565,13 +527,23 @@ class ExtractGUI(ctk.CTk):
                 self._pb_files.update(val, detail_text)
             return
 
+        # Status Updates from Index-First Engine
+        if "Resuming directly from file" in line:
+            self._pb_files.update(0.5, line, title="RESUMING SESSION")
+        elif "Reading master Central Directory" in line:
+            self._pb_files.update(0.1, "Fetching Central Directory...", title="INDEXING ARCHIVE")
+        elif "Files" in line and "uncompressed" in line:
+            self._pb_files.update(0.3, line.replace("Files   :", "").strip(), title="INDEXED ARCHIVE")
+
         # Parse Summary Box Lines
         bm = self._RE_BOX.search(line)
         if bm:
             label, value = bm.group(1).lower(), bm.group(2).strip()
             if "speed" in label:    self._c_speed.set(value)
-            elif "ratio" in label:  self._c_ratio.set(value)
+            elif "ratio" in label or "final ratio" in label:  self._c_ratio.set(value)
             elif "extracted" in label or "total size" in label: self._c_disk.set(value)
+            elif "files" in label:
+                self._pb_files.update(1.0, f"Total Extracted: {value}", title="COMPLETED FILES")
             self._write_log(line)
             return
 

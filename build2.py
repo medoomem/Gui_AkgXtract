@@ -2,7 +2,7 @@
 """
 Unified game archive extractor
 Upgraded Dual-Engine Direct Streaming Extractor:
- - ZIP / ZIP64 : "Index-First" Sequential Stream Engine (Zero desync, Flag 0x08 immune)
+ - ZIP / ZIP64 : "Index-First" Sequential Stream Engine (Zero desync, Flag 0x08 immune + .akg_resume)
  - RAR / TAR   : C-Speed Native Streaming Pipe (curl --http1.1 | bsdtar)
 
 Requirements:
@@ -234,13 +234,18 @@ class ResilientStreamReader:
             left -= len(chunk)
 
 
-# ─── ZIP Mode: Index-First Sequential Stream (Bulletproof) ────────────────────
+# ─── ZIP Mode: Index-First Sequential Stream (With .akg_resume) ───────────────
 
 def extract_zip_index_stream(url: str, output_dir: Path, skip_existing: bool, quiet: bool) -> None:
     compressed_total = get_compressed_size(url)
+    resume_file = output_dir / ".akg_resume"
     
+    start_offset = 0
+    total_bytes_uncompressed = 0
+    start_entry_idx = 0
+
     if not quiet:
-        print(f"\n  Mode    : ZIP (Index-First Sequential Stream Engine)")
+        print(f"\n  Mode    : ZIP (Index-First Sequential Stream + State-Tracking Resume)")
         print(f"  [*] Reading master Central Directory index upfront...")
 
     try:
@@ -250,6 +255,32 @@ def extract_zip_index_stream(url: str, output_dir: Path, skip_existing: bool, qu
             entries = sorted(raw_entries, key=lambda e: e.header_offset)
     except Exception as e:
         sys.exit(f"\n  [ERROR] Failed to fetch ZIP index: {e}\n")
+
+    # Load previous stream state if resuming
+    if skip_existing and resume_file.exists():
+        try:
+            with open(resume_file, "r") as rf:
+                data = rf.read().strip()
+                if "," in data:
+                    parts = data.split(",")
+                    saved_offset = int(parts[0])
+                    total_bytes_uncompressed = int(parts[1])
+                else:
+                    saved_offset = int(data)
+            
+            # Snap to the exact file header where we left off
+            for idx, e in enumerate(entries):
+                if e.header_offset >= saved_offset:
+                    start_entry_idx = idx
+                    start_offset = e.header_offset
+                    break
+
+            if not quiet and start_offset > 0:
+                tqdm.write(f"  [*] Resuming directly from file #{start_entry_idx+1} ({fmt_size(start_offset)} saved)...")
+        except Exception:
+            start_offset = 0
+            total_bytes_uncompressed = 0
+            start_entry_idx = 0
 
     files_to_get = [e for e in entries if not e.filename.endswith("/")]
     total_uncompressed = sum(e.file_size for e in files_to_get)
@@ -273,14 +304,18 @@ def extract_zip_index_stream(url: str, output_dir: Path, skip_existing: bool, qu
         bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]"
     )
 
-    reader = ResilientStreamReader(url, compressed_total, start_offset=0, pbar=pbar)
-    current_stream_pos = 0
-    total_bytes_uncompressed = 0
-    total_files = 0
+    if start_offset > 0:
+        pbar.update(start_offset)
+
+    reader = ResilientStreamReader(url, compressed_total, start_offset=start_offset, pbar=pbar)
+    current_stream_pos = start_offset
+    total_files = start_entry_idx
     has_errors = False
 
     try:
-        for entry in entries:
+        # Iterate from the unextracted files onwards
+        for i in range(start_entry_idx, len(entries)):
+            entry = entries[i]
             fname = entry.filename
             dest = safe_path(output_dir / fname)
 
@@ -368,6 +403,14 @@ def extract_zip_index_stream(url: str, output_dir: Path, skip_existing: bool, qu
             total_files += 1
             total_bytes_uncompressed += written
 
+            # Save state to .akg_resume
+            try:
+                next_offset = entries[i+1].header_offset if (i + 1 < len(entries)) else current_stream_pos
+                with open(resume_file, "w") as rf:
+                    rf.write(f"{next_offset},{total_bytes_uncompressed}")
+            except Exception:
+                pass
+
             # Update metrics matching gui.py regex _RE_POST
             ratio = total_bytes_uncompressed / current_stream_pos if current_stream_pos > 0 else 1.0
             est_final = compressed_total * ratio
@@ -385,8 +428,15 @@ def extract_zip_index_stream(url: str, output_dir: Path, skip_existing: bool, qu
         pbar.close()
 
     elapsed = time.time() - t0
-    speed = current_stream_pos / elapsed if elapsed > 0 else 0
+    speed = (current_stream_pos - start_offset) / elapsed if elapsed > 0 else 0
     ok = not has_errors
+
+    # Clean up the state tracking file on successful exit
+    if ok and resume_file.exists():
+        try:
+            resume_file.unlink()
+        except Exception:
+            pass
 
     box("  Extraction Complete" if ok else "  Finished with errors", [
         ("Status", "OK" if ok else "ERROR"),
@@ -605,7 +655,7 @@ def main() -> None:
 
     # Route Engines
     if archive_type == "zip":
-        # Index-First Sequential Streamer (Never desyncs, immune to Flag 0x08 & FastFiles)
+        # Index-First Sequential Streamer (Never desyncs, immune to Flag 0x08 & FastFiles + .akg_resume)
         extract_zip_index_stream(args.url, output_dir, args.skip_existing, args.quiet)
     else:
         # Fall back to native C stream reader (curl | bsdtar) for RAR / TAR
