@@ -9,6 +9,12 @@ Supported formats: **ZIP** (including Zstandard and Deflate64), **RAR**, **TAR**
 
 ---
 
+## Preview
+
+https://github.com/user-attachments/assets/85c0ae8a-0600-4bac-9696-a0320c34c575
+
+---
+
 ## Code Transparency & Security
 
 If you prefer not to run pre-compiled binary releases from the internet, **all code in this repository is 100% open-source**. 
