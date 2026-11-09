@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 """
 Unified game archive extractor
-Handles ZIP (with ZIP64, zstd, and deflate) and RAR files directly from URL.
-
-ZIP Normal mode : HTTP range requests -> seeks directly to file offsets, supports parallel workers
-ZIP Stream mode : Pure-Python sequential parser with ZIP64 extra block parsing + TQDM output + Resumable Network Stream + State-Tracking Resume
-RAR/TAR Mode    : curl | bsdtar streaming pipe
+Upgraded Dual-Engine Direct Streaming Extractor:
+ - ZIP / ZIP64 : "Index-First" Sequential Stream Engine (Zero desync, Flag 0x08 immune)
+ - RAR / TAR   : C-Speed Native Streaming Pipe (curl --http1.1 | bsdtar)
 
 Requirements:
     pip install remotezip tqdm zstandard requests zipfile_deflate64
@@ -21,12 +19,6 @@ import threading
 import time
 import zlib
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor
-
-try:
-    import zipfile_deflate64  # Patches standard zipfile to support Deflate64
-except ImportError:
-    pass
 
 # Force Windows to use UTF-8 so progress output never crashes
 if sys.stdout is not None:
@@ -34,6 +26,11 @@ if sys.stdout is not None:
         sys.stdout.reconfigure(encoding='utf-8')
     except Exception:
         pass
+
+try:
+    import zipfile_deflate64
+except ImportError:
+    pass
 
 try:
     import requests
@@ -78,10 +75,10 @@ COMPRESSION_NAMES = {
 
 SESSION = requests.Session()
 SESSION.verify = False
-SESSION.headers.update({"User-Agent": "Mozilla/5.0"})
+SESSION.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
 
 
-# ─── Formatting ───────────────────────────────────────────────────────────────
+# ─── Formatting & Path Safety ─────────────────────────────────────────────────
 
 def fmt_size(n: float) -> str:
     for u in ("B", "KB", "MB", "GB", "TB"):
@@ -96,6 +93,15 @@ def fmt_duration(s: float) -> str:
         return f"{s:.1f}s"
     m, s = divmod(int(s), 60)
     return f"{m}m {s}s" if m < 60 else f"{m // 60}h {m % 60}m {s}s"
+
+
+def safe_path(p: Path) -> Path:
+    """ Bypasses Windows 260-character MAX_PATH limit so deep game files are never skipped """
+    if os.name == "nt":
+        p_abs = str(p.resolve())
+        if not p_abs.startswith("\\\\?\\"):
+            return Path("\\\\?\\" + p_abs)
+    return p
 
 
 def box(title: str, rows: list[tuple], width: int = 46) -> None:
@@ -115,6 +121,9 @@ def _find(name: str) -> str | None:
     p = Path(base_dir) / name
     if p.exists(): return str(p)
 
+    tools_dir = Path(base_dir) / "Tools used" / name
+    if tools_dir.exists(): return str(tools_dir)
+
     exe_dir = os.path.dirname(sys.executable)
     p2 = Path(exe_dir) / name
     if p2.exists(): return str(p2)
@@ -124,11 +133,11 @@ def _find(name: str) -> str | None:
 
 
 def find_curl() -> str | None:
-    return _find("curl.exe")
+    return _find("curl.exe") or _find("curl")
 
 
 def find_bsdtar() -> str | None:
-    return _find("bsdtar.exe")
+    return _find("bsdtar.exe") or _find("bsdtar")
 
 
 # ─── Archive type detection ───────────────────────────────────────────────────
@@ -159,150 +168,95 @@ def get_compressed_size(url: str) -> int:
         return 0
 
 
-# ─── Byte Feeder helper for Sequential ZIP stream ─────────────────────────────
+# ─── Resilient Network Stream Feeder ──────────────────────────────────────────
 
-class ByteFeeder:
-    def __init__(self, chunk_iter, initial: bytes = b"", start_offset: int = 0):
-        self._iter = chunk_iter
-        self._buf = bytearray(initial)
+class ResilientStreamReader:
+    """
+    Feeds bytes sequentially from a single HTTP stream.
+    Automatically reconnects with HTTP Range headers if proxy drops connection midway.
+    """
+    def __init__(self, url: str, total_size: int, start_offset: int = 0, pbar=None):
+        self.url = url
+        self.total_size = total_size
         self.bytes_read = start_offset
+        self.pbar = pbar
+        self._buf = bytearray()
+        self._resp = None
+        self._iter = None
+        self._connect()
 
-    def _fill(self, n):
+    def _connect(self):
+        retries = 9999
+        backoff = 2
+        while retries > 0:
+            try:
+                headers = {}
+                if self.bytes_read > 0:
+                    headers["Range"] = f"bytes={self.bytes_read}-"
+                self._resp = SESSION.get(self.url, stream=True, timeout=30, headers=headers)
+                self._resp.raise_for_status()
+                self._iter = self._resp.iter_content(chunk_size=128 * 1024)
+                return
+            except Exception as e:
+                tqdm.write(f"\n  [WARN] Connection dropped at {fmt_size(self.bytes_read)}. Reconnecting in {backoff}s... ({e})")
+                time.sleep(backoff)
+                backoff = min(30, backoff * 2)
+                retries -= 1
+        raise ConnectionError("Exceeded maximum connection retries.")
+
+    def read_exact(self, n: int) -> bytes:
         while len(self._buf) < n:
             try:
                 chunk = next(self._iter)
-            except StopIteration:
-                break
-            self._buf += chunk
+                if not chunk:
+                    raise StopIteration
+                self._buf += chunk
+                chunk_len = len(chunk)
+                self.bytes_read += chunk_len
+                if self.pbar:
+                    self.pbar.update(chunk_len)
+            except (StopIteration, requests.exceptions.RequestException):
+                if self.total_size and self.bytes_read >= self.total_size:
+                    break
+                self._connect()
 
-    def read(self, n):
-        self._fill(n)
         data = bytes(self._buf[:n])
         del self._buf[:n]
-        self.bytes_read += len(data)
         return data
 
-
-# ─── Resumable HTTP Stream Generator ──────────────────────────────────────────
-
-def resumable_chunk_generator(url: str, total_size: int, progress_callback, start_offset: int = 0, chunk_size: int = 256 * 1024):
-    """
-    Yields network chunks sequentially. If the TCP connection breaks, 
-    it automatically reconnects with an HTTP Range header to resume from the exact byte.
-    """
-    bytes_downloaded = start_offset
-    max_retries = 9999
-    retries_left = max_retries
-    backoff = 2
-    
-    while True:
-        if total_size > 0 and bytes_downloaded >= total_size:
-            break
-            
-        try:
-            headers = {}
-            if bytes_downloaded > 0:
-                headers["Range"] = f"bytes={bytes_downloaded}-"
-                
-            r = SESSION.get(url, stream=True, timeout=30, headers=headers)
-            r.raise_for_status()
-            
-            # Reset exponential backoff on a successful socket connection
-            backoff = 2
-            retries_left = max_retries
-            
-            has_data = False
-            for chunk in r.iter_content(chunk_size=chunk_size):
-                if chunk:
-                    has_data = True
-                    chunk_len = len(chunk)
-                    bytes_downloaded += chunk_len
-                    progress_callback(chunk_len)
-                    yield chunk
-            r.close()
-            
-            if total_size > 0 and bytes_downloaded >= total_size:
+    def skip_bytes(self, n: int):
+        left = n
+        while left > 0:
+            take = min(256 * 1024, left)
+            chunk = self.read_exact(take)
+            if not chunk:
                 break
-            if not has_data:
-                # Naturally reached the EOF of the stream
-                break
-                
-        except Exception as e:
-            if total_size > 0 and bytes_downloaded >= total_size:
-                break
-                
-            tqdm.write(f"\n  [WARN] Connection dropped at {fmt_size(bytes_downloaded)}. Reconnecting in {backoff}s... (Error: {e})")
-            retries_left -= 1
-            if retries_left < 0:
-                tqdm.write("  [ERROR] Exceeded maximum connection retries.")
-                raise e
-                
-            time.sleep(backoff)
-            backoff = min(30, backoff * 2)
+            left -= len(chunk)
 
 
-def parse_zip64_extra(extra_data: bytes, uncomp_32: int, comp_32: int) -> tuple[int, int]:
-    uncomp_size = uncomp_32
-    comp_size = comp_32
-    idx = 0
-    while idx + 4 <= len(extra_data):
-        header_id, block_size = struct.unpack_from("<HH", extra_data, idx)
-        idx += 4
-        if header_id == 0x0001:  # ZIP64 extra field signature
-            local_idx = idx
-            if uncomp_32 == 0xFFFFFFFF and local_idx + 8 <= idx + block_size:
-                uncomp_size = struct.unpack_from("<Q", extra_data, local_idx)[0]
-                local_idx += 8
-            if comp_32 == 0xFFFFFFFF and local_idx + 8 <= idx + block_size:
-                comp_size = struct.unpack_from("<Q", extra_data, local_idx)[0]
-                local_idx += 8
-            break
-        idx += block_size
-    return uncomp_size, comp_size
+# ─── ZIP Mode: Index-First Sequential Stream (Bulletproof) ────────────────────
 
-
-def make_decompressor(method: int):
-    if method == 0:
-        class _Passthrough:
-            def decompress(self, chunk): return chunk
-        return _Passthrough()
-    if method == 8:
-        return zlib.decompressobj(-15)
-    if method == 93:
-        if zstd is None:
-            raise RuntimeError("Zstandard entry found but 'zstandard' is missing. Run: pip install zstandard")
-        return zstd.ZstdDecompressor().decompressobj()
-    raise RuntimeError(f"Unsupported compression method: {method}")
-
-
-# ─── ZIP Mode 1: Pure-Python Sequential ZIP64 Streaming ───────────────────────
-
-def extract_zip_stream(url: str, output_dir: Path, skip_existing: bool, quiet: bool) -> None:
+def extract_zip_index_stream(url: str, output_dir: Path, skip_existing: bool, quiet: bool) -> None:
     compressed_total = get_compressed_size(url)
-    resume_file = output_dir / ".akg_resume"
     
-    start_offset = 0
-    total_bytes_uncompressed = 0
-    
-    # Load previous stream state if resuming
-    if skip_existing and resume_file.exists():
-        try:
-            with open(resume_file, "r") as rf:
-                data = rf.read().strip()
-                if "," in data:
-                    parts = data.split(",")
-                    start_offset = int(parts[0])
-                    total_bytes_uncompressed = int(parts[1])
-                else:
-                    start_offset = int(data)
-            tqdm.write(f"  [*] Resuming sequential stream directly from byte index {fmt_size(start_offset)}...")
-        except Exception:
-            start_offset = 0
-            total_bytes_uncompressed = 0
+    if not quiet:
+        print(f"\n  Mode    : ZIP (Index-First Sequential Stream Engine)")
+        print(f"  [*] Reading master Central Directory index upfront...")
+
+    try:
+        with RemoteZip(url, session=SESSION) as rz:
+            raw_entries = rz.infolist()
+            # Sort files in strict physical order as stored on disk
+            entries = sorted(raw_entries, key=lambda e: e.header_offset)
+    except Exception as e:
+        sys.exit(f"\n  [ERROR] Failed to fetch ZIP index: {e}\n")
+
+    files_to_get = [e for e in entries if not e.filename.endswith("/")]
+    total_uncompressed = sum(e.file_size for e in files_to_get)
 
     if not quiet:
-        print(f"\n  Mode    : ZIP (Pure-Python Sequential Stream + ZIP64 + Auto-Resume)")
         print(f"  Archive : {fmt_size(compressed_total)} compressed")
+        print(f"  Files   : {len(files_to_get):,} files ({fmt_size(total_uncompressed)} uncompressed)")
         print(f"  Output  : {output_dir}\n")
 
     t0 = time.time()
@@ -319,128 +273,103 @@ def extract_zip_stream(url: str, output_dir: Path, skip_existing: bool, quiet: b
         bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]"
     )
 
-    if start_offset > 0:
-        pbar.update(start_offset)
-
-    bytes_downloaded = start_offset
-    def progress_callback(chunk_len):
-        nonlocal bytes_downloaded
-        bytes_downloaded += chunk_len
-        pbar.update(chunk_len)
-
-    # Initialize the resilient chunk generator starting at the saved offset
-    resumable_iter = resumable_chunk_generator(url, compressed_total, progress_callback, start_offset=start_offset)
-    feeder = ByteFeeder(resumable_iter, start_offset=start_offset)
-
+    reader = ResilientStreamReader(url, compressed_total, start_offset=0, pbar=pbar)
+    current_stream_pos = 0
+    total_bytes_uncompressed = 0
     total_files = 0
     has_errors = False
 
     try:
-        while True:
-            sig = feeder.read(4)
-            if not sig or len(sig) < 4:
-                break
-            if sig != LOCAL_FILE_HEADER_SIG:
-                break  # Hit Central Directory or tail records
+        for entry in entries:
+            fname = entry.filename
+            dest = safe_path(output_dir / fname)
 
-            header = feeder.read(26)
-            if len(header) < 26:
-                break
-                
-            (version, flags, method, mtime, mdate, crc32,
-             comp_size, uncomp_size, fname_len, extra_len) = struct.unpack("<HHHHHIIIHH", header)
-
-            if flags & 0x08:
-                tqdm.write("  [!] Skipped: Data descriptor present (flag 0x08). Sizes are unknown.")
-                sys.exit("\n  [ERROR] Sequential streaming cannot parse ZIPs with streaming data descriptors (flag 0x08) upfront. "
-                         "Please run without '--force-stream' to use HTTP Range requests mode.")
-
-            fname_bytes = feeder.read(fname_len)
-            fname = fname_bytes.decode("utf-8", errors="replace")
-            extra_data = feeder.read(extra_len)
-
-            # Process ZIP64 metadata
-            if comp_size == 0xFFFFFFFF or uncomp_size == 0xFFFFFFFF:
-                uncomp_size, comp_size = parse_zip64_extra(extra_data, uncomp_size, comp_size)
-
-            dest = output_dir / fname
-
+            # Directory entry
             if fname.endswith("/"):
                 dest.mkdir(parents=True, exist_ok=True)
                 continue
 
+            # 1. Skip gap/padding/descriptors between previous file and this file's header
+            if current_stream_pos < entry.header_offset:
+                skip_len = entry.header_offset - current_stream_pos
+                reader.skip_bytes(skip_len)
+                current_stream_pos += skip_len
+
+            # 2. Read the 30-byte local header
+            hdr = reader.read_exact(30)
+            current_stream_pos += 30
+            if hdr[:4] != LOCAL_FILE_HEADER_SIG:
+                tqdm.write(f"  [WARN] Header offset shift at {fname}, resynchronizing...")
+
+            fname_len, extra_len = struct.unpack_from("<HH", hdr, 26)
+
+            # 3. Skip local filename and extra fields
+            if (fname_len + extra_len) > 0:
+                reader.skip_bytes(fname_len + extra_len)
+                current_stream_pos += (fname_len + extra_len)
+
+            # Canonical sizes from Central Directory (bypasses all Flag 0x08 bugs!)
+            comp_size = entry.compress_size
+            uncomp_size = entry.file_size
+            method = entry.compress_type
+
             # Skip existing files accurately
             if skip_existing and dest.exists() and dest.stat().st_size == uncomp_size:
-                read_so_far = 0
-                while read_so_far < comp_size:
-                    take = min(256 * 1024, comp_size - read_so_far)
-                    feeder.read(take)
-                    read_so_far += take
+                reader.skip_bytes(comp_size)
+                current_stream_pos += comp_size
                 total_files += 1
-                if not quiet:
-                    tqdm.write(f"  [SKIPPED] {fname}")
                 continue
 
             dest.parent.mkdir(parents=True, exist_ok=True)
 
-            try:
-                decompressor = make_decompressor(method)
-            except RuntimeError as e:
-                tqdm.write(f"  [FAIL] {fname}: {e}")
+            # Decompressor setup
+            if method == 0:
+                decompressor = None
+            elif method == 8:
+                decompressor = zlib.decompressobj(-15)
+            elif method == 93:
+                if zstd is None:
+                    raise RuntimeError("Zstandard required. Run: pip install zstandard")
+                decompressor = zstd.ZstdDecompressor().decompressobj()
+            else:
+                tqdm.write(f"  [FAIL] {fname}: Unsupported compression method {method}")
+                reader.skip_bytes(comp_size)
+                current_stream_pos += comp_size
                 has_errors = True
-                read_so_far = 0
-                while read_so_far < comp_size:
-                    take = min(256 * 1024, comp_size - read_so_far)
-                    feeder.read(take)
-                    read_so_far += take
                 continue
 
-            read_so_far = 0
+            bytes_left = comp_size
             written = 0
-            READ_CHUNK = 256 * 1024
 
-            try:
-                with open(dest, "wb") as f:
-                    while read_so_far < comp_size:
-                        take = min(READ_CHUNK, comp_size - read_so_far)
-                        chunk = feeder.read(take)
-                        if not chunk:
-                            break
-                        read_so_far += len(chunk)
-                        
+            with open(dest, "wb") as f:
+                while bytes_left > 0:
+                    take = min(256 * 1024, bytes_left)
+                    chunk = reader.read_exact(take)
+                    if not chunk:
+                        break
+                    current_stream_pos += len(chunk)
+                    bytes_left -= len(chunk)
+
+                    if decompressor:
                         out = decompressor.decompress(chunk)
                         if out:
                             f.write(out)
                             written += len(out)
+                    else:
+                        f.write(chunk)
+                        written += len(chunk)
 
-                    if hasattr(decompressor, 'flush'):
-                        try:
-                            out = decompressor.flush()
-                            if out:
-                                f.write(out)
-                                written += len(out)
-                        except Exception:
-                            pass
-                total_files += 1
-                total_bytes_uncompressed += written
-                
-                # Save the current state so we don't redownload this file if interrupted
-                try:
-                    with open(resume_file, "w") as rf:
-                        rf.write(f"{feeder.bytes_read},{total_bytes_uncompressed}")
-                except Exception:
-                    pass
-                    
-            except Exception as e:
-                tqdm.write(f"  [WRITE ERROR] {fname}: {e}")
-                has_errors = True
-                # Skip remaining corrupted payload bytes to maintain stream index synchronization
-                remaining = comp_size - read_so_far
-                if remaining > 0:
-                    feeder.read(remaining)
+                if decompressor and hasattr(decompressor, "flush"):
+                    out = decompressor.flush()
+                    if out:
+                        f.write(out)
+                        written += len(out)
 
-            # Format metrics area for GUI updates
-            ratio = total_bytes_uncompressed / bytes_downloaded if bytes_downloaded > 0 else 1.0
+            total_files += 1
+            total_bytes_uncompressed += written
+
+            # Update metrics matching gui.py regex _RE_POST
+            ratio = total_bytes_uncompressed / current_stream_pos if current_stream_pos > 0 else 1.0
             est_final = compressed_total * ratio
             pbar.set_postfix_str(
                 f"Out: {fmt_size(total_bytes_uncompressed)} | "
@@ -456,177 +385,18 @@ def extract_zip_stream(url: str, output_dir: Path, skip_existing: bool, quiet: b
         pbar.close()
 
     elapsed = time.time() - t0
-    speed = (bytes_downloaded - start_offset) / elapsed if elapsed > 0 else 0
+    speed = current_stream_pos / elapsed if elapsed > 0 else 0
     ok = not has_errors
-
-    # Clean up the state tracking file on successful exit
-    if ok and resume_file.exists():
-        try:
-            resume_file.unlink()
-        except Exception:
-            pass
 
     box("  Extraction Complete" if ok else "  Finished with errors", [
         ("Status", "OK" if ok else "ERROR"),
         ("Files", f"{total_files:,}"),
-        ("Compressed", fmt_size(bytes_downloaded)),
+        ("Compressed", fmt_size(current_stream_pos)),
         ("Extracted", fmt_size(total_bytes_uncompressed)),
-        ("Final Ratio", f"{(total_bytes_uncompressed/bytes_downloaded):.4f}x" if bytes_downloaded else "N/A"),
+        ("Final Ratio", f"{(total_bytes_uncompressed/current_stream_pos):.4f}x" if current_stream_pos else "N/A"),
         ("Time", fmt_duration(elapsed)),
         ("Speed", f"{fmt_size(int(speed))}/s"),
         ("Saved to", str(output_dir)[:38]),
-    ])
-
-
-# ─── ZIP Mode 2: Multi-threaded Range Request Extraction ─────────────────────
-
-_pool_url: str = ""
-_tl = threading.local()
-
-
-def _get_conn() -> RemoteZip:
-    if not getattr(_tl, "conn", None):
-        _tl.conn = RemoteZip(_pool_url, session=SESSION)
-    return _tl.conn
-
-
-def _reset_conn() -> None:
-    _tl.conn = None
-
-
-def _extract_zstd(entry, dest: Path) -> None:
-    h_start = entry.header_offset
-    fetch_end = h_start + 30 + len(entry.filename.encode()) + 512
-    r = SESSION.get(_pool_url, headers={"Range": f"bytes={h_start}-{fetch_end}"})
-    r.raise_for_status()
-    hdr = r.content
-    if hdr[:4] != b"PK\x03\x04":
-        raise ValueError("Bad local file header")
-    fname_len = struct.unpack_from("<H", hdr, 26)[0]
-    extra_len = struct.unpack_from("<H", hdr, 28)[0]
-    data_start = h_start + 30 + fname_len + extra_len
-    data_end   = data_start + entry.compress_size - 1
-
-    r2 = SESSION.get(_pool_url, headers={"Range": f"bytes={data_start}-{data_end}"}, stream=True)
-    r2.raise_for_status()
-    dctx = zstd.ZstdDecompressor()
-    with open(dest, "wb") as f:
-        with dctx.stream_reader(r2.raw) as reader:
-            shutil.copyfileobj(reader, f)
-
-
-def _extract_zip_entry(entry, output_dir: Path, flat: bool,
-                        retries: int, dir_lock: threading.Lock) -> tuple:
-    name = entry.filename
-    dest = output_dir / Path(name).name if flat else output_dir / name
-    with dir_lock:
-        dest.parent.mkdir(parents=True, exist_ok=True)
-
-    for attempt in range(retries + 1):
-        try:
-            if entry.compress_type == 93:
-                _extract_zstd(entry, dest)
-            else:
-                conn = _get_conn()
-                if flat:
-                    with conn.open(name) as src, open(dest, "wb") as f:
-                        shutil.copyfileobj(src, f)
-                else:
-                    conn.extract(name, str(output_dir))
-            return True, name, entry.file_size
-        except Exception as exc:
-            _reset_conn()
-            if attempt < retries:
-                time.sleep(1.5 ** attempt)
-            else:
-                return False, name, str(exc)
-
-
-def extract_zip(url: str, output_dir: Path, skip_existing: bool,
-                workers: int, retries: int, quiet: bool) -> None:
-    global _pool_url
-    _pool_url = url
-
-    if not quiet:
-        print("\n  Mode    : ZIP (HTTP range requests — jumps directly to each file)")
-        print("  Fetching central directory...")
-
-    try:
-        with RemoteZip(url, session=SESSION) as z:
-            all_entries = z.infolist()
-    except Exception as e:
-        sys.exit(f"\n  [ERROR] {e}\n")
-
-    entries = [e for e in all_entries if not e.filename.endswith("/")]
-    total_bytes = sum(e.file_size for e in entries)
-
-    if not quiet:
-        methods = {}
-        for e in entries:
-            m = COMPRESSION_NAMES.get(e.compress_type, f"method {e.compress_type}")
-            methods[m] = methods.get(m, 0) + 1
-        method_str = ", ".join(f"{v}× {k}" for k, v in methods.items())
-        print(f"\n  Files   : {len(entries):,}")
-        print(f"  Size    : {fmt_size(total_bytes)} uncompressed")
-        print(f"  Methods : {method_str}")
-        print(f"  Output  : {output_dir}")
-        if workers > 1:
-            print(f"  Workers : {workers}")
-
-    to_get, skipped = [], 0
-    for e in entries:
-        dest = output_dir / Path(e.filename)
-        if skip_existing and dest.exists() and dest.stat().st_size == e.file_size:
-            skipped += 1
-        else:
-            to_get.append(e)
-
-    if not to_get:
-        print("\n  All files already exist — nothing to do.\n")
-        return
-
-    if not quiet and skipped:
-        print(f"  Skipping: {skipped:,} existing files")
-
-    work_bytes = sum(e.file_size for e in to_get)
-    outer = tqdm(total=work_bytes, unit="B", unit_scale=True, unit_divisor=1024,
-                 desc="  Total", colour="cyan", ncols=80, position=0,
-                 leave=True, disable=quiet)
-    inner = tqdm(total=len(to_get), unit="file",
-                 desc="  Files", colour="magenta", ncols=80, position=1,
-                 leave=True, disable=quiet)
-
-    lock, dir_lock = threading.Lock(), threading.Lock()
-    stats = {"ok": 0, "fail": 0, "bytes": 0}
-
-    def do(entry):
-        if not quiet:
-            inner.set_description(f"  {Path(entry.filename).name[:36]:<36}")
-        ok, name, result = _extract_zip_entry(entry, output_dir, False, retries, dir_lock)
-        with lock:
-            if ok:
-                stats["ok"] += 1; stats["bytes"] += result
-            else:
-                stats["fail"] += 1
-                tqdm.write(f"  [FAIL] {name}: {result}")
-        outer.update(entry.file_size)
-        inner.update(1)
-
-    t0 = time.time()
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        list(pool.map(do, to_get))
-    elapsed = time.time() - t0
-    outer.close(); inner.close()
-
-    speed = stats["bytes"] / elapsed if elapsed > 0 else 0
-    box("  Extraction Complete", [
-        ("Extracted",  f"{stats['ok']:,} files"),
-        ("Skipped",    f"{skipped:,} files (already existed)") if skipped else ("", ""),
-        ("Failed",     f"{stats['fail']:,} files") if stats["fail"] else ("", ""),
-        ("Total size", fmt_size(stats["bytes"])),
-        ("Time",       fmt_duration(elapsed)),
-        ("Speed",      f"{fmt_size(int(speed))}/s"),
-        ("Saved to",   str(output_dir)[:38]),
     ])
 
 
@@ -658,6 +428,8 @@ def extract_stream(url: str, output_dir: Path, archive_type: str,
         print(f"  Archive : {fmt_size(compressed_total)} compressed")
         print(f"  Output  : {output_dir}\n")
 
+    output_dir.mkdir(parents=True, exist_ok=True)
+
     bsdtar_args = [bsdtar, "-xf", "-", "-C", str(output_dir)]
     if skip_existing: bsdtar_args.insert(1, "-k")
     
@@ -668,7 +440,7 @@ def extract_stream(url: str, output_dir: Path, archive_type: str,
 
     def _bsdtar_err():
         for line in bsdtar_proc.stderr:
-            if not quiet: tqdm.write(f"  [bsdtar] {line.decode().strip()}")
+            if not quiet: tqdm.write(f"  [bsdtar] {line.decode('utf-8', errors='replace').strip()}")
     threading.Thread(target=_bsdtar_err, daemon=True).start()
 
     bytes_received = 0
@@ -691,7 +463,13 @@ def extract_stream(url: str, output_dir: Path, archive_type: str,
     )
 
     while bytes_received < compressed_total:
-        curl_args = [curl, "-L", "-k", "--http1.1", "-r", f"{bytes_received}-", url]
+        curl_args = [
+            curl, "-L", "-k", "--http1.1", "-#",
+            "--keepalive-time", "5",
+            "-A", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+            "-r", f"{bytes_received}-",
+            url
+        ]
         curl_proc = subprocess.Popen(curl_args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         
         try:
@@ -738,13 +516,16 @@ def extract_stream(url: str, output_dir: Path, archive_type: str,
     
     final_size = get_dir_size(output_dir)
     ok = bsdtar_proc.returncode == 0
+    elapsed = time.time() - t0
+    speed = bytes_received / elapsed if elapsed > 0 else 0
     
     box("  Extraction Complete" if ok else "  Finished with errors", [
-        ("Status",    "OK" if ok else "ERROR"),
+        ("Status",     "OK" if ok else "ERROR"),
         ("Compressed", fmt_size(bytes_received)),
         ("Extracted",  fmt_size(final_size)),
         ("Final Ratio", f"{(final_size/bytes_received):.4f}x" if bytes_received else "N/A"),
-        ("Time",       fmt_duration(time.time() - t0)),
+        ("Time",       fmt_duration(elapsed)),
+        ("Speed",      f"{fmt_size(int(speed))}/s"),
         ("Saved to",   str(output_dir)[:38]),
     ])
 
@@ -795,8 +576,6 @@ def main() -> None:
         if archive_type != "zip":
             print(f"\n  [WARN] --info only works for ZIP. RAR has no remote index.\n")
             sys.exit(0)
-        global _pool_url
-        _pool_url = args.url
         try:
             with RemoteZip(args.url, session=SESSION) as z:
                 entries = [e for e in z.infolist() if not e.filename.endswith("/")]
@@ -824,27 +603,21 @@ def main() -> None:
         ])
         return
 
-    use_stream = args.force_stream or archive_type in ("rar", "tar", "unknown")
-
-    if use_stream:
-        if archive_type == "zip":
-            # Run the sequential ZIP parser with resumable Range capabilities
-            extract_zip_stream(args.url, output_dir, args.skip_existing, args.quiet)
-        else:
-            # Fall back to bsdtar stream reader for RAR / TAR
-            curl   = find_curl()
-            bsdtar = find_bsdtar()
-            missing = [n for n, v in [("curl", curl), ("bsdtar", bsdtar)] if not v]
-            if missing:
-                print(f"\n  [ERROR] Not found: {', '.join(missing)}")
-                print("  Build the exe with build.py to bundle them automatically.\n")
-                sys.exit(1)
-            extract_stream(args.url, output_dir, archive_type,
-                           curl, bsdtar, args.skip_existing, args.quiet)
+    # Route Engines
+    if archive_type == "zip":
+        # Index-First Sequential Streamer (Never desyncs, immune to Flag 0x08 & FastFiles)
+        extract_zip_index_stream(args.url, output_dir, args.skip_existing, args.quiet)
     else:
-        # Range-request multi-threaded ZIP mode
-        extract_zip(args.url, output_dir,
-                    args.skip_existing, args.workers, args.retry, args.quiet)
+        # Fall back to native C stream reader (curl | bsdtar) for RAR / TAR
+        curl   = find_curl()
+        bsdtar = find_bsdtar()
+        missing = [n for n, v in [("curl", curl), ("bsdtar", bsdtar)] if not v]
+        if missing:
+            print(f"\n  [ERROR] Not found: {', '.join(missing)}")
+            print("  Build the exe with build.py to bundle them automatically.\n")
+            sys.exit(1)
+        extract_stream(args.url, output_dir, archive_type,
+                       curl, bsdtar, args.skip_existing, args.quiet)
 
 
 if __name__ == "__main__":
